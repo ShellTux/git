@@ -197,7 +197,7 @@ static int show_tree_default(
 	if (early >= 0)
 		return early;
 
-	printf("%06o %s %s\t", data.mode, type_name(data.type),
+	printf("%06o %s %s\t", mode, type_name(type),
 	       repo_find_unique_abbrev(r, oid, options->abbrev));
 	show_tree_common_default_long(options, base, pathname, base->len);
 	return recurse;

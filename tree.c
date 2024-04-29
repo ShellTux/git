@@ -59,7 +59,7 @@ int read_tree_at(struct repository *r,
 			strbuf_add(base, entry.path, len);
 			strbuf_addch(base, '/');
 			retval = read_tree_at(r, lookup_tree(r, &oid),
-						base, pathspec,
+						base, 0, pathspec,
 						fn, context);
 			strbuf_setlen(base, oldlen);
 			if (retval)
@@ -111,7 +111,7 @@ int read_tree_at(struct repository *r,
 			strbuf_addch(base, '/');
 
 			retval = read_tree_at(subrepo_p, lookup_tree(subrepo_p, &oid),
-						base, pathspec,
+						base, 0, pathspec,
 						fn, context);
 			if (retval)
 			    die("failed to read tree for %s", base->buf);

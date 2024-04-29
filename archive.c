@@ -476,7 +476,9 @@ static int reject_entry(
 	return ret;
 }
 
-static int reject_outside(const struct object_id *oid UNUSED,
+static int reject_outside(
+                          struct repository *r UNUSED,
+                          const struct object_id *oid UNUSED,
 			  struct strbuf *base, const char *filename,
 			  unsigned mode, void *context)
 {
