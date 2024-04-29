@@ -1,9 +1,11 @@
 #include "git-compat-util.h"
 #include "cache-tree.h"
+#include "gettext.h"
+#include "hex.h"
 #include "lockfile.h"
+#include "object-name.h"
 #include "refs.h"
 #include "reset.h"
-#include "run-command.h"
 #include "tree-walk.h"
 #include "tree.h"
 #include "unpack-trees.h"
@@ -38,7 +40,7 @@ static int update_refs(const struct reset_head_opts *opts,
 	prefix_len = msg.len;
 
 	if (update_orig_head) {
-		if (!get_oid("ORIG_HEAD", &oid_old_orig))
+		if (!repo_get_oid(the_repository, "ORIG_HEAD", &oid_old_orig))
 			old_orig = &oid_old_orig;
 		if (head) {
 			if (!reflog_orig_head) {
@@ -106,7 +108,7 @@ int reset_head(struct repository *r, const struct reset_head_opts *opts)
 		goto leave_reset_head;
 	}
 
-	if (!get_oid("HEAD", &head_oid)) {
+	if (!repo_get_oid(r, "HEAD", &head_oid)) {
 		head = &head_oid;
 	} else if (!oid || !reset_hard) {
 		ret = error(_("could not determine HEAD revision"));
@@ -128,6 +130,7 @@ int reset_head(struct repository *r, const struct reset_head_opts *opts)
 	unpack_tree_opts.update = 1;
 	unpack_tree_opts.merge = 1;
 	unpack_tree_opts.preserve_ignored = 0; /* FIXME: !overwrite_ignore */
+	unpack_tree_opts.skip_cache_tree_update = 1;
 	init_checkout_metadata(&unpack_tree_opts.meta, switch_to_branch, oid, NULL);
 	if (reset_hard)
 		unpack_tree_opts.reset = UNPACK_RESET_PROTECT_UNTRACKED;
@@ -154,6 +157,11 @@ int reset_head(struct repository *r, const struct reset_head_opts *opts)
 	}
 
 	tree = repo_parse_tree_indirect(r, oid);
+	if (!tree) {
+		ret = error(_("unable to read tree (%s)"), oid_to_hex(oid));
+		goto leave_reset_head;
+	}
+
 	prime_cache_tree(r, r->index, tree);
 
 	if (write_locked_index(r->index, &lock, COMMIT_LOCK) < 0) {

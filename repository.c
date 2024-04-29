@@ -2,16 +2,22 @@
  * not really _using_ the compat macros, just make sure the_index
  * declaration matches the definition in this file.
  */
-#define USE_THE_INDEX_COMPATIBILITY_MACROS
-#include "cache.h"
+#define USE_THE_INDEX_VARIABLE
+#include "git-compat-util.h"
+#include "abspath.h"
 #include "repository.h"
-#include "object-store.h"
+#include "object-store-ll.h"
 #include "config.h"
 #include "object.h"
 #include "lockfile.h"
+#include "path.h"
+#include "read-cache-ll.h"
 #include "remote.h"
+#include "setup.h"
+#include "loose.h"
 #include "submodule-config.h"
 #include "sparse-index.h"
+#include "trace2.h"
 #include "promisor-remote.h"
 
 /* The main repository */
@@ -27,6 +33,8 @@ void initialize_the_repository(void)
 	the_repo.objects = raw_object_store_new();
 	the_repo.remote_state = remote_state_new();
 	the_repo.parsed_objects = parsed_object_pool_new();
+
+	index_state_init(&the_index, the_repository);
 
 	repo_set_hash_algo(&the_repo, GIT_HASH_SHA1);
 }
@@ -95,6 +103,20 @@ void repo_set_gitdir(struct repository *repo,
 void repo_set_hash_algo(struct repository *repo, int hash_algo)
 {
 	repo->hash_algo = &hash_algos[hash_algo];
+}
+
+void repo_set_compat_hash_algo(struct repository *repo, int algo)
+{
+	if (hash_algo_by_ptr(repo->hash_algo) == algo)
+		BUG("hash_algo and compat_hash_algo match");
+	repo->compat_hash_algo = algo ? &hash_algos[algo] : NULL;
+	if (repo->compat_hash_algo)
+		repo_read_loose_object_map(repo);
+}
+
+void repo_set_ref_storage_format(struct repository *repo, unsigned int format)
+{
+	repo->ref_storage_format = format;
 }
 
 /*
@@ -177,6 +199,9 @@ int repo_init(struct repository *repo,
 		goto error;
 
 	repo_set_hash_algo(repo, format.hash_algo);
+	repo_set_compat_hash_algo(repo, format.compat_hash_algo);
+	repo_set_ref_storage_format(repo, format.ref_storage_format);
+	repo->repository_format_worktree_config = format.worktree_config;
 
 	/* take ownership of format.partial_clone */
 	repo->repository_format_partial_clone = format.partial_clone;
@@ -184,6 +209,9 @@ int repo_init(struct repository *repo,
 
 	if (worktree)
 		repo_set_worktree(repo, worktree);
+
+	if (repo->compat_hash_algo)
+		repo_read_loose_object_map(repo);
 
 	clear_repository_format(&format);
 	return 0;
@@ -248,8 +276,6 @@ static void repo_clear_path_cache(struct repo_path_cache *cache)
 	FREE_AND_NULL(cache->merge_rr);
 	FREE_AND_NULL(cache->merge_mode);
 	FREE_AND_NULL(cache->merge_head);
-	FREE_AND_NULL(cache->merge_autostash);
-	FREE_AND_NULL(cache->auto_merge);
 	FREE_AND_NULL(cache->fetch_head);
 	FREE_AND_NULL(cache->shallow);
 }
@@ -302,14 +328,13 @@ int repo_read_index(struct repository *repo)
 {
 	int res;
 
-	if (!repo->index)
-		CALLOC_ARRAY(repo->index, 1);
-
 	/* Complete the double-reference */
-	if (!repo->index->repo)
-		repo->index->repo = repo;
-	else if (repo->index->repo != repo)
+	if (!repo->index) {
+		ALLOC_ARRAY(repo->index, 1);
+		index_state_init(repo->index, repo);
+	} else if (repo->index->repo != repo) {
 		BUG("repo's index should point back at itself");
+	}
 
 	res = read_index_from(repo->index, repo->index_file, repo->gitdir);
 

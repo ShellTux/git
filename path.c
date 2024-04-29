@@ -1,16 +1,21 @@
 /*
  * Utilities for paths and pathnames
  */
-#include "cache.h"
+#include "git-compat-util.h"
+#include "abspath.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hex.h"
 #include "repository.h"
 #include "strbuf.h"
 #include "string-list.h"
 #include "dir.h"
 #include "worktree.h"
+#include "setup.h"
 #include "submodule-config.h"
 #include "path.h"
 #include "packfile.h"
-#include "object-store.h"
+#include "object-store-ll.h"
 #include "lockfile.h"
 #include "exec-cmd.h"
 
@@ -22,8 +27,6 @@ static int get_st_mode_bits(const char *path, int *mode)
 	*mode = st.st_mode;
 	return 0;
 }
-
-static char bad_path[] = "/bad-path/";
 
 static struct strbuf *get_pathname(void)
 {
@@ -52,21 +55,6 @@ static void strbuf_cleanup_path(struct strbuf *sb)
 	const char *path = cleanup_path(sb->buf);
 	if (path > sb->buf)
 		strbuf_remove(sb, 0, path - sb->buf);
-}
-
-char *mksnpath(char *buf, size_t n, const char *fmt, ...)
-{
-	va_list args;
-	unsigned len;
-
-	va_start(args, fmt);
-	len = vsnprintf(buf, n, fmt, args);
-	va_end(args);
-	if (len >= n) {
-		strlcpy(buf, bad_path, n);
-		return buf;
-	}
-	return (char *)cleanup_path(buf);
 }
 
 static int dir_prefix(const char *buf, const char *dir)
@@ -347,7 +335,8 @@ static void init_common_trie(void)
  * Helper function for update_common_dir: returns 1 if the dir
  * prefix is common.
  */
-static int check_common(const char *unmatched, void *value, void *baton)
+static int check_common(const char *unmatched, void *value,
+			void *baton UNUSED)
 {
 	struct common_dir *dir = value;
 
@@ -865,7 +854,7 @@ const char *enter_repo(const char *path, int strict)
 	return NULL;
 }
 
-static int calc_shared_perm(int mode)
+int calc_shared_perm(int mode)
 {
 	int tweak;
 
@@ -901,7 +890,13 @@ int adjust_shared_perm(const char *path)
 	if (S_ISDIR(old_mode)) {
 		/* Copy read bits to execute bits */
 		new_mode |= (new_mode & 0444) >> 2;
-		new_mode |= FORCE_DIR_SET_GID;
+
+		/*
+		 * g+s matters only if any extra access is granted
+		 * based on group membership.
+		 */
+		if (FORCE_DIR_SET_GID && (new_mode & 060))
+			new_mode |= FORCE_DIR_SET_GID;
 	}
 
 	if (((old_mode ^ new_mode) & ~S_IFMT) &&
@@ -1198,6 +1193,26 @@ int normalize_path_copy_len(char *dst, const char *src, int *prefix_len)
 int normalize_path_copy(char *dst, const char *src)
 {
 	return normalize_path_copy_len(dst, src, NULL);
+}
+
+int strbuf_normalize_path(struct strbuf *src)
+{
+	struct strbuf dst = STRBUF_INIT;
+
+	strbuf_grow(&dst, src->len);
+	if (normalize_path_copy(dst.buf, src->buf) < 0) {
+		strbuf_release(&dst);
+		return -1;
+	}
+
+	/*
+	 * normalize_path does not tell us the new length, so we have to
+	 * compute it by looking for the new NUL it placed
+	 */
+	strbuf_setlen(&dst, strlen(dst.buf));
+	strbuf_swap(src, &dst);
+	strbuf_release(&dst);
+	return 0;
 }
 
 /*
@@ -1556,7 +1571,5 @@ REPO_GIT_PATH_FUNC(merge_msg, "MERGE_MSG")
 REPO_GIT_PATH_FUNC(merge_rr, "MERGE_RR")
 REPO_GIT_PATH_FUNC(merge_mode, "MERGE_MODE")
 REPO_GIT_PATH_FUNC(merge_head, "MERGE_HEAD")
-REPO_GIT_PATH_FUNC(merge_autostash, "MERGE_AUTOSTASH")
-REPO_GIT_PATH_FUNC(auto_merge, "AUTO_MERGE")
 REPO_GIT_PATH_FUNC(fetch_head, "FETCH_HEAD")
 REPO_GIT_PATH_FUNC(shallow, "shallow")

@@ -1,7 +1,8 @@
-#include "cache.h"
+#include "git-compat-util.h"
 #include "commit.h"
 #include "refs.h"
 #include "diff.h"
+#include "repository.h"
 #include "revision.h"
 #include "string-list.h"
 #include "reflog-walk.h"
@@ -55,7 +56,7 @@ static void free_complete_reflog(struct complete_reflogs *array)
 	free(array);
 }
 
-static void complete_reflogs_clear(void *util, const char *str)
+static void complete_reflogs_clear(void *util, const char *str UNUSED)
 {
 	struct complete_reflogs *array = util;
 	free_complete_reflog(array);
@@ -222,7 +223,7 @@ int add_reflog_for_walk(struct reflog_walk_info *info,
 
 void get_reflog_selector(struct strbuf *sb,
 			 struct reflog_walk_info *reflog_info,
-			 const struct date_mode *dmode, int force_date,
+			 struct date_mode dmode, int force_date,
 			 int shorten)
 {
 	struct commit_reflog *commit_reflog = reflog_info->last_commit_reflog;
@@ -296,7 +297,7 @@ timestamp_t get_reflog_timestamp(struct reflog_walk_info *reflog_info)
 }
 
 void show_reflog_message(struct reflog_walk_info *reflog_info, int oneline,
-			 const struct date_mode *dmode, int force_date)
+			 struct date_mode dmode, int force_date)
 {
 	if (reflog_info && reflog_info->last_commit_reflog) {
 		struct commit_reflog *commit_reflog = reflog_info->last_commit_reflog;

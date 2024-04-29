@@ -1,10 +1,12 @@
 #include "builtin.h"
+#include "gettext.h"
 #include "parse-options.h"
+#include "path.h"
+#include "strbuf.h"
+#include "write-or-die.h"
 
 #ifndef NO_UNIX_SOCKETS
 
-#include "credential.h"
-#include "string-list.h"
 #include "unix-socket.h"
 #include "run-command.h"
 
@@ -146,6 +148,9 @@ int cmd_credential_cache(int argc, const char **argv, const char *prefix)
 	if (!argc)
 		usage_with_options(usage, options);
 	op = argv[0];
+
+	if (!have_unix_sockets())
+		die(_("credential-cache unavailable; no unix socket support"));
 
 	if (!socket_path)
 		socket_path = get_socket_path();

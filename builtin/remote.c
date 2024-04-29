@@ -1,6 +1,8 @@
 #include "builtin.h"
 #include "config.h"
+#include "gettext.h"
 #include "parse-options.h"
+#include "path.h"
 #include "transport.h"
 #include "remote.h"
 #include "string-list.h"
@@ -9,7 +11,7 @@
 #include "rebase.h"
 #include "refs.h"
 #include "refspec.h"
-#include "object-store.h"
+#include "object-store-ll.h"
 #include "strvec.h"
 #include "commit-reach.h"
 #include "progress.h"
@@ -92,13 +94,15 @@ static int verbose;
 
 static int fetch_remote(const char *name)
 {
-	const char *argv[] = { "fetch", name, NULL, NULL };
-	if (verbose) {
-		argv[1] = "-v";
-		argv[2] = name;
-	}
+	struct child_process cmd = CHILD_PROCESS_INIT;
+
+	strvec_push(&cmd.args, "fetch");
+	if (verbose)
+		strvec_push(&cmd.args, "-v");
+	strvec_push(&cmd.args, name);
+	cmd.git_cmd = 1;
 	printf_ln(_("Updating %s"), name);
-	if (run_command_v_opt(argv, RUN_GIT_CMD))
+	if (run_command(&cmd))
 		return error(_("Could not fetch %s"), name);
 	return 0;
 }
@@ -146,7 +150,7 @@ static int parse_mirror_opt(const struct option *opt, const char *arg, int not)
 	else if (!strcmp(arg, "push"))
 		*mirror = MIRROR_PUSH;
 	else
-		return error(_("unknown mirror argument: %s"), arg);
+		return error(_("unknown --mirror argument: %s"), arg);
 	return 0;
 }
 
@@ -164,10 +168,9 @@ static int add(int argc, const char **argv, const char *prefix)
 	struct option options[] = {
 		OPT_BOOL('f', "fetch", &fetch, N_("fetch the remote branches")),
 		OPT_SET_INT(0, "tags", &fetch_tags,
-			    N_("import all tags and associated objects when fetching"),
+			    N_("import all tags and associated objects when fetching\n"
+			       "or do not fetch any tag at all (--no-tags)"),
 			    TAGS_SET),
-		OPT_SET_INT(0, NULL, &fetch_tags,
-			    N_("or do not fetch any tag at all (--no-tags)"), TAGS_UNSET),
 		OPT_STRING_LIST('t', "track", &track, N_("branch"),
 				N_("branch(es) to track")),
 		OPT_STRING('m', "master", &master, N_("branch"), N_("master branch")),
@@ -265,6 +268,7 @@ static const char *abbrev_ref(const char *name, const char *prefix)
 #define abbrev_branch(name) abbrev_ref((name), "refs/heads/")
 
 static int config_read_branches(const char *key, const char *value,
+				const struct config_context *ctx UNUSED,
 				void *data UNUSED)
 {
 	const char *orig_key = key;
@@ -441,7 +445,7 @@ static int get_push_ref_states(const struct ref *remote_refs,
 			info->status = PUSH_STATUS_UPTODATE;
 		else if (is_null_oid(&ref->old_oid))
 			info->status = PUSH_STATUS_CREATE;
-		else if (has_object_file(&ref->old_oid) &&
+		else if (repo_has_object_file(the_repository, &ref->old_oid) &&
 			 ref_newer(&ref->new_oid, &ref->old_oid))
 			info->status = PUSH_STATUS_FASTFORWARD;
 		else
@@ -642,17 +646,19 @@ struct push_default_info
 };
 
 static int config_read_push_default(const char *key, const char *value,
-	void *cb)
+	const struct config_context *ctx, void *cb)
 {
+	const struct key_value_info *kvi = ctx->kvi;
+
 	struct push_default_info* info = cb;
 	if (strcmp(key, "remote.pushdefault") ||
 	    !value || strcmp(value, info->old_name))
 		return 0;
 
-	info->scope = current_config_scope();
+	info->scope = kvi->scope;
 	strbuf_reset(&info->origin);
-	strbuf_addstr(&info->origin, current_config_name());
-	info->linenr = current_config_line();
+	strbuf_addstr(&info->origin, config_origin_type_name(kvi->origin_type));
+	info->linenr = kvi->linenr;
 
 	return 0;
 }
@@ -942,7 +948,7 @@ static int rm(int argc, const char **argv, const char *prefix)
 	return result;
 }
 
-static void clear_push_info(void *util, const char *string)
+static void clear_push_info(void *util, const char *string UNUSED)
 {
 	struct push_info *info = util;
 	free(info->dest);
@@ -1491,7 +1497,9 @@ static int prune(int argc, const char **argv, const char *prefix)
 	return result;
 }
 
-static int get_remote_default(const char *key, const char *value UNUSED, void *priv)
+static int get_remote_default(const char *key, const char *value UNUSED,
+			      const struct config_context *ctx UNUSED,
+			      void *priv)
 {
 	if (strcmp(key, "remotes.default") == 0) {
 		int *found = priv;
@@ -1508,37 +1516,35 @@ static int update(int argc, const char **argv, const char *prefix)
 			 N_("prune remotes after fetching")),
 		OPT_END()
 	};
-	struct strvec fetch_argv = STRVEC_INIT;
+	struct child_process cmd = CHILD_PROCESS_INIT;
 	int default_defined = 0;
-	int retval;
 
 	argc = parse_options(argc, argv, prefix, options,
 			     builtin_remote_update_usage,
 			     PARSE_OPT_KEEP_ARGV0);
 
-	strvec_push(&fetch_argv, "fetch");
+	strvec_push(&cmd.args, "fetch");
 
 	if (prune != -1)
-		strvec_push(&fetch_argv, prune ? "--prune" : "--no-prune");
+		strvec_push(&cmd.args, prune ? "--prune" : "--no-prune");
 	if (verbose)
-		strvec_push(&fetch_argv, "-v");
-	strvec_push(&fetch_argv, "--multiple");
+		strvec_push(&cmd.args, "-v");
+	strvec_push(&cmd.args, "--multiple");
 	if (argc < 2)
-		strvec_push(&fetch_argv, "default");
+		strvec_push(&cmd.args, "default");
 	for (i = 1; i < argc; i++)
-		strvec_push(&fetch_argv, argv[i]);
+		strvec_push(&cmd.args, argv[i]);
 
-	if (strcmp(fetch_argv.v[fetch_argv.nr-1], "default") == 0) {
+	if (strcmp(cmd.args.v[cmd.args.nr-1], "default") == 0) {
 		git_config(get_remote_default, &default_defined);
 		if (!default_defined) {
-			strvec_pop(&fetch_argv);
-			strvec_push(&fetch_argv, "--all");
+			strvec_pop(&cmd.args);
+			strvec_push(&cmd.args, "--all");
 		}
 	}
 
-	retval = run_command_v_opt(fetch_argv.v, RUN_GIT_CMD);
-	strvec_clear(&fetch_argv);
-	return retval;
+	cmd.git_cmd = 1;
+	return run_command(&cmd);
 }
 
 static int remove_all_fetch_refspecs(const char *key)

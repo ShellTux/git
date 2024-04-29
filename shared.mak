@@ -37,13 +37,13 @@ space := $(empty) $(empty)
 QUIET_SUBDIR0  = +$(MAKE) -C # space to separate -C and subdir
 QUIET_SUBDIR1  =
 
-ifneq ($(findstring w,$(MAKEFLAGS)),w)
+ifneq ($(findstring w,$(firstword -$(MAKEFLAGS))),w)
 PRINT_DIR = --no-print-directory
 else # "make -w"
 NO_SUBDIR = :
 endif
 
-ifneq ($(findstring s,$(MAKEFLAGS)),s)
+ifneq ($(findstring s,$(firstword -$(MAKEFLAGS))),s)
 ifndef V
 ## common
 	QUIET_SUBDIR0  = +@subdir=
@@ -60,6 +60,7 @@ ifndef V
 	QUIET_AR       = @echo '   ' AR $@;
 	QUIET_LINK     = @echo '   ' LINK $@;
 	QUIET_BUILT_IN = @echo '   ' BUILTIN $@;
+	QUIET_CP       = @echo '   ' CP $< $@;
 	QUIET_LNCP     = @echo '   ' LN/CP $@;
 	QUIET_XGETTEXT = @echo '   ' XGETTEXT $@;
 	QUIET_MSGINIT  = @echo '   ' MSGINIT $@;
@@ -69,8 +70,11 @@ ifndef V
 	QUIET_SP       = @echo '   ' SP $<;
 	QUIET_HDR      = @echo '   ' HDR $(<:hcc=h);
 	QUIET_RC       = @echo '   ' RC $@;
-	QUIET_SPATCH   = @echo '   ' SPATCH $<;
-	QUIET_SPATCH_T = @echo '   ' SPATCH TEST $(@:.build/%=%);
+
+## Used in "Makefile": SPATCH
+	QUIET_SPATCH			= @echo '   ' SPATCH $< \>$@;
+	QUIET_SPATCH_TEST		= @echo '   ' SPATCH TEST $(@:.build/%=%);
+	QUIET_SPATCH_CAT		= @echo '   ' SPATCH CAT $(@:%.patch=%.d/)\*\*.patch \>$@;
 
 ## Used in "Documentation/Makefile"
 	QUIET_ASCIIDOC	= @echo '   ' ASCIIDOC $@;
@@ -103,4 +107,12 @@ endif
 ## the "a/prefix/dir/file" rule.
 define mkdir_p_parent_template
 $(if $(wildcard $(@D)),,$(QUIET_MKDIR_P_PARENT)$(shell mkdir -p $(@D)))
+endef
+
+## Getting sick of writing -L$(SOMELIBDIR) $(CC_LD_DYNPATH)$(SOMELIBDIR)?
+## Write $(call libpath_template,$(SOMELIBDIR)) instead, perhaps?
+## With CC_LD_DYNPATH set to either an empty string or to "-L", the
+## the directory is not shown the second time.
+define libpath_template
+-L$(1) $(if $(filter-out -L,$(CC_LD_DYNPATH)),$(CC_LD_DYNPATH)$(1))
 endef

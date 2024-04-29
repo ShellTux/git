@@ -1,9 +1,13 @@
 #include "test-tool.h"
-#include "cache.h"
+#include "hex.h"
 #include "refs.h"
+#include "setup.h"
 #include "worktree.h"
-#include "object-store.h"
+#include "object-store-ll.h"
+#include "path.h"
 #include "repository.h"
+#include "strbuf.h"
+#include "revision.h"
 
 struct flag_definition {
 	const char *name;
@@ -108,17 +112,6 @@ static const char **get_store(const char **argv, struct ref_store **refs)
 	return argv + 1;
 }
 
-static struct flag_definition pack_flags[] = { FLAG_DEF(PACK_REFS_PRUNE),
-					       FLAG_DEF(PACK_REFS_ALL),
-					       { NULL, 0 } };
-
-static int cmd_pack_refs(struct ref_store *refs, const char **argv)
-{
-	unsigned int flags = arg_flags(*argv++, "flags", pack_flags);
-
-	return refs_pack_refs(refs, flags);
-}
-
 static int cmd_create_symref(struct ref_store *refs, const char **argv)
 {
 	const char *refname = notnull(*argv++, "refname");
@@ -174,6 +167,15 @@ static int cmd_for_each_ref(struct ref_store *refs, const char **argv)
 	return refs_for_each_ref_in(refs, prefix, each_ref, NULL);
 }
 
+static int cmd_for_each_ref__exclude(struct ref_store *refs, const char **argv)
+{
+	const char *prefix = notnull(*argv++, "prefix");
+	const char **exclude_patterns = argv;
+
+	return refs_for_each_fullref_in(refs, prefix, exclude_patterns, each_ref,
+					NULL);
+}
+
 static int cmd_resolve_ref(struct ref_store *refs, const char **argv)
 {
 	struct object_id oid = *null_oid();
@@ -200,14 +202,21 @@ static int cmd_verify_ref(struct ref_store *refs, const char **argv)
 	return ret;
 }
 
-static int cmd_for_each_reflog(struct ref_store *refs, const char **argv)
+static int each_reflog(const char *refname, void *cb_data UNUSED)
 {
-	return refs_for_each_reflog(refs, each_ref, NULL);
+	printf("%s\n", refname);
+	return 0;
 }
 
-static int each_reflog(struct object_id *old_oid, struct object_id *new_oid,
-		       const char *committer, timestamp_t timestamp,
-		       int tz, const char *msg, void *cb_data UNUSED)
+static int cmd_for_each_reflog(struct ref_store *refs,
+			       const char **argv UNUSED)
+{
+	return refs_for_each_reflog(refs, each_reflog, NULL);
+}
+
+static int each_reflog_ent(struct object_id *old_oid, struct object_id *new_oid,
+			   const char *committer, timestamp_t timestamp,
+			   int tz, const char *msg, void *cb_data UNUSED)
 {
 	printf("%s %s %s %" PRItime " %+05d%s%s", oid_to_hex(old_oid),
 	       oid_to_hex(new_oid), committer, timestamp, tz,
@@ -219,14 +228,14 @@ static int cmd_for_each_reflog_ent(struct ref_store *refs, const char **argv)
 {
 	const char *refname = notnull(*argv++, "refname");
 
-	return refs_for_each_reflog_ent(refs, refname, each_reflog, refs);
+	return refs_for_each_reflog_ent(refs, refname, each_reflog_ent, refs);
 }
 
 static int cmd_for_each_reflog_ent_reverse(struct ref_store *refs, const char **argv)
 {
 	const char *refname = notnull(*argv++, "refname");
 
-	return refs_for_each_reflog_ent_reverse(refs, refname, each_reflog, refs);
+	return refs_for_each_reflog_ent_reverse(refs, refname, each_reflog_ent, refs);
 }
 
 static int cmd_reflog_exists(struct ref_store *refs, const char **argv)
@@ -255,11 +264,6 @@ static int cmd_delete_reflog(struct ref_store *refs, const char **argv)
 	return refs_delete_reflog(refs, refname);
 }
 
-static int cmd_reflog_expire(struct ref_store *refs, const char **argv)
-{
-	die("not supported yet");
-}
-
 static int cmd_delete_ref(struct ref_store *refs, const char **argv)
 {
 	const char *msg = notnull(*argv++, "msg");
@@ -281,16 +285,19 @@ static int cmd_update_ref(struct ref_store *refs, const char **argv)
 	const char *new_sha1_buf = notnull(*argv++, "new-sha1");
 	const char *old_sha1_buf = notnull(*argv++, "old-sha1");
 	unsigned int flags = arg_flags(*argv++, "flags", transaction_flags);
-	struct object_id old_oid;
+	struct object_id old_oid, *old_oid_ptr = NULL;
 	struct object_id new_oid;
 
-	if (get_oid_hex(old_sha1_buf, &old_oid))
-		die("cannot parse %s as %s", old_sha1_buf, the_hash_algo->name);
+	if (*old_sha1_buf) {
+		if (get_oid_hex(old_sha1_buf, &old_oid))
+			die("cannot parse %s as %s", old_sha1_buf, the_hash_algo->name);
+		old_oid_ptr = &old_oid;
+	}
 	if (get_oid_hex(new_sha1_buf, &new_oid))
 		die("cannot parse %s as %s", new_sha1_buf, the_hash_algo->name);
 
 	return refs_update_ref(refs, msg, refname,
-			       &new_oid, &old_oid,
+			       &new_oid, old_oid_ptr,
 			       flags, UPDATE_REFS_DIE_ON_ERR);
 }
 
@@ -300,11 +307,11 @@ struct command {
 };
 
 static struct command commands[] = {
-	{ "pack-refs", cmd_pack_refs },
 	{ "create-symref", cmd_create_symref },
 	{ "delete-refs", cmd_delete_refs },
 	{ "rename-ref", cmd_rename_ref },
 	{ "for-each-ref", cmd_for_each_ref },
+	{ "for-each-ref--exclude", cmd_for_each_ref__exclude },
 	{ "resolve-ref", cmd_resolve_ref },
 	{ "verify-ref", cmd_verify_ref },
 	{ "for-each-reflog", cmd_for_each_reflog },
@@ -313,7 +320,6 @@ static struct command commands[] = {
 	{ "reflog-exists", cmd_reflog_exists },
 	{ "create-reflog", cmd_create_reflog },
 	{ "delete-reflog", cmd_delete_reflog },
-	{ "reflog-expire", cmd_reflog_expire },
 	/*
 	 * backend transaction functions can't be tested separately
 	 */
@@ -322,7 +328,7 @@ static struct command commands[] = {
 	{ NULL, NULL }
 };
 
-int cmd__ref_store(int argc, const char **argv)
+int cmd__ref_store(int argc UNUSED, const char **argv)
 {
 	struct ref_store *refs;
 	const char *func;

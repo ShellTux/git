@@ -457,7 +457,7 @@ expect_invalid_filter_spec () {
 	test_must_fail git -C r3 rev-list --objects --filter="$spec" HEAD \
 		>actual 2>actual_stderr &&
 	test_must_be_empty actual &&
-	test_i18ngrep "$err" actual_stderr
+	test_grep "$err" actual_stderr
 }
 
 test_expect_success 'combine:... while URL-encoding things that should not be' '
@@ -670,7 +670,7 @@ test_expect_success 'rev-list W/ --missing=print' '
 	awk -f print_2.awk ls_files_result |
 	sort >expected &&
 
-	for id in `cat expected | sed "s|..|&/|"`
+	for id in `sed "s|..|&/|" expected`
 	do
 		rm r1/.git/objects/$id || return 1
 	done &&

@@ -6,12 +6,17 @@
  * Based on git-clean.sh by Pavel Roskin
  */
 
-#define USE_THE_INDEX_COMPATIBILITY_MACROS
+#define USE_THE_INDEX_VARIABLE
 #include "builtin.h"
-#include "cache.h"
+#include "abspath.h"
 #include "config.h"
 #include "dir.h"
+#include "gettext.h"
 #include "parse-options.h"
+#include "path.h"
+#include "read-cache-ll.h"
+#include "repository.h"
+#include "setup.h"
 #include "string-list.h"
 #include "quote.h"
 #include "column.h"
@@ -20,13 +25,13 @@
 #include "help.h"
 #include "prompt.h"
 
-static int force = -1; /* unset */
+static int require_force = -1; /* unset */
 static int interactive;
 static struct string_list del_list = STRING_LIST_INIT_DUP;
 static unsigned int colopts;
 
 static const char *const builtin_clean_usage[] = {
-	N_("git clean [-d] [-f] [-i] [-n] [-q] [-e <pattern>] [-x | -X] [--] <paths>..."),
+	N_("git clean [-d] [-f] [-i] [-n] [-q] [-e <pattern>] [-x | -X] [--] [<pathspec>...]"),
 	NULL
 };
 
@@ -99,7 +104,8 @@ struct menu_stuff {
 
 define_list_config_array(color_interactive_slots);
 
-static int git_clean_config(const char *var, const char *value, void *cb)
+static int git_clean_config(const char *var, const char *value,
+			    const struct config_context *ctx, void *cb)
 {
 	const char *slot_name;
 
@@ -122,12 +128,14 @@ static int git_clean_config(const char *var, const char *value, void *cb)
 	}
 
 	if (!strcmp(var, "clean.requireforce")) {
-		force = !git_config_bool(var, value);
+		require_force = git_config_bool(var, value);
 		return 0;
 	}
 
-	/* inspect the color.ui config variable and others */
-	return git_color_default_config(var, value, cb);
+	if (git_color_config(var, value, cb) < 0)
+		return -1;
+
+	return git_default_config(var, value, ctx, cb);
 }
 
 static const char *clean_get_color(enum color_clean ix)
@@ -560,7 +568,7 @@ static int parse_choice(struct menu_stuff *menu_stuff,
 
 /*
  * Implement a git-add-interactive compatible UI, which is borrowed
- * from git-add--interactive.perl.
+ * from add-interactive.c.
  *
  * Return value:
  *
@@ -912,7 +920,7 @@ int cmd_clean(int argc, const char **argv, const char *prefix)
 {
 	int i, res;
 	int dry_run = 0, remove_directories = 0, quiet = 0, ignored = 0;
-	int ignored_only = 0, config_set = 0, errors = 0, gone = 1;
+	int ignored_only = 0, force = 0, errors = 0, gone = 1;
 	int rm_flags = REMOVE_DIR_KEEP_NESTED_GIT;
 	struct strbuf abs_path = STRBUF_INIT;
 	struct dir_struct dir = DIR_INIT;
@@ -938,22 +946,12 @@ int cmd_clean(int argc, const char **argv, const char *prefix)
 	};
 
 	git_config(git_clean_config, NULL);
-	if (force < 0)
-		force = 0;
-	else
-		config_set = 1;
 
 	argc = parse_options(argc, argv, prefix, options, builtin_clean_usage,
 			     0);
 
-	if (!interactive && !dry_run && !force) {
-		if (config_set)
-			die(_("clean.requireForce set to true and neither -i, -n, nor -f given; "
-				  "refusing to clean"));
-		else
-			die(_("clean.requireForce defaults to true and neither -i, -n, nor -f given;"
-				  " refusing to clean"));
-	}
+	if (require_force != 0 && !force && !interactive && !dry_run)
+		die(_("clean.requireForce is true and -f not given: refusing to clean"));
 
 	if (force > 1)
 		rm_flags = 0;
@@ -963,7 +961,7 @@ int cmd_clean(int argc, const char **argv, const char *prefix)
 	dir.flags |= DIR_SHOW_OTHER_DIRECTORIES;
 
 	if (ignored && ignored_only)
-		die(_("-x and -X cannot be used together"));
+		die(_("options '%s' and '%s' cannot be used together"), "-x", "-X");
 	if (!ignored)
 		setup_standard_excludes(&dir);
 	if (ignored_only)
@@ -1012,7 +1010,7 @@ int cmd_clean(int argc, const char **argv, const char *prefix)
 	prepare_repo_settings(the_repository);
 	the_repository->settings.command_requires_full_index = 0;
 
-	if (read_cache() < 0)
+	if (repo_read_index(the_repository) < 0)
 		die(_("index file corrupt"));
 
 	pl = add_pattern_list(&dir, EXC_CMDL, "--exclude option");
@@ -1031,7 +1029,7 @@ int cmd_clean(int argc, const char **argv, const char *prefix)
 		struct stat st;
 		const char *rel;
 
-		if (!cache_name_is_other(ent->name, ent->len))
+		if (!index_name_is_other(&the_index, ent->name, ent->len))
 			continue;
 
 		if (lstat(ent->name, &st))
@@ -1092,5 +1090,6 @@ int cmd_clean(int argc, const char **argv, const char *prefix)
 	strbuf_release(&buf);
 	string_list_clear(&del_list, 0);
 	string_list_clear(&exclude_list, 0);
+	clear_pathspec(&pathspec);
 	return (errors != 0);
 }

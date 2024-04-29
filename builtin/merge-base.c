@@ -1,19 +1,22 @@
 #include "builtin.h"
-#include "cache.h"
 #include "config.h"
 #include "commit.h"
-#include "refs.h"
-#include "diff.h"
-#include "revision.h"
+#include "gettext.h"
+#include "hex.h"
+#include "object-name.h"
 #include "parse-options.h"
 #include "repository.h"
 #include "commit-reach.h"
 
 static int show_merge_base(struct commit **rev, int rev_nr, int show_all)
 {
-	struct commit_list *result, *r;
+	struct commit_list *result = NULL, *r;
 
-	result = get_merge_bases_many_dirty(rev[0], rev_nr - 1, rev + 1);
+	if (repo_get_merge_bases_many_dirty(the_repository, rev[0],
+					    rev_nr - 1, rev + 1, &result) < 0) {
+		free_commit_list(result);
+		return -1;
+	}
 
 	if (!result)
 		return 1;
@@ -31,8 +34,8 @@ static int show_merge_base(struct commit **rev, int rev_nr, int show_all)
 static const char * const merge_base_usage[] = {
 	N_("git merge-base [-a | --all] <commit> <commit>..."),
 	N_("git merge-base [-a | --all] --octopus <commit>..."),
-	N_("git merge-base --independent <commit>..."),
 	N_("git merge-base --is-ancestor <commit> <commit>"),
+	N_("git merge-base --independent <commit>..."),
 	N_("git merge-base --fork-point <ref> [<commit>]"),
 	NULL
 };
@@ -42,7 +45,7 @@ static struct commit *get_commit_reference(const char *arg)
 	struct object_id revkey;
 	struct commit *r;
 
-	if (get_oid(arg, &revkey))
+	if (repo_get_oid(the_repository, arg, &revkey))
 		die("Not a valid object name %s", arg);
 	r = lookup_commit_reference(the_repository, &revkey);
 	if (!r)
@@ -74,13 +77,17 @@ static int handle_independent(int count, const char **args)
 static int handle_octopus(int count, const char **args, int show_all)
 {
 	struct commit_list *revs = NULL;
-	struct commit_list *result, *rev;
+	struct commit_list *result = NULL, *rev;
 	int i;
 
 	for (i = count - 1; i >= 0; i--)
 		commit_list_insert(get_commit_reference(args[i]), &revs);
 
-	result = get_octopus_merge_bases(revs);
+	if (get_octopus_merge_bases(revs, &result) < 0) {
+		free_commit_list(revs);
+		free_commit_list(result);
+		return 128;
+	}
 	free_commit_list(revs);
 	reduce_heads_replace(&result);
 
@@ -100,12 +107,16 @@ static int handle_octopus(int count, const char **args, int show_all)
 static int handle_is_ancestor(int argc, const char **argv)
 {
 	struct commit *one, *two;
+	int ret;
 
 	if (argc != 2)
 		die("--is-ancestor takes exactly two commits");
 	one = get_commit_reference(argv[0]);
 	two = get_commit_reference(argv[1]);
-	if (in_merge_bases(one, two))
+	ret = repo_in_merge_bases(the_repository, one, two);
+	if (ret < 0)
+		exit(128);
+	if (ret)
 		return 0;
 	else
 		return 1;
@@ -118,7 +129,7 @@ static int handle_fork_point(int argc, const char **argv)
 	const char *commitname;
 
 	commitname = (argc == 2) ? argv[1] : "HEAD";
-	if (get_oid(commitname, &oid))
+	if (repo_get_oid(the_repository, commitname, &oid))
 		die("Not a valid object name: '%s'", commitname);
 
 	derived = lookup_commit_reference(the_repository, &oid);

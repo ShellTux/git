@@ -310,7 +310,7 @@ test_expect_success 'autostash is saved on editor failure with conflict' '
 test_expect_success 'autostash with dirty submodules' '
 	test_when_finished "git reset --hard && git checkout main" &&
 	git checkout -b with-submodule &&
-	git submodule add ./ sub &&
+	git -c protocol.file.allow=always submodule add ./ sub &&
 	test_tick &&
 	git commit -m add-submodule &&
 	echo changed >sub/file0 &&
@@ -331,6 +331,16 @@ test_expect_success 'never change active branch' '
 	echo changed >file0 &&
 	git rebase --autostash not-the-feature-branch feature-branch &&
 	test_cmp_rev not-the-feature-branch unrelated-onto-branch
+'
+
+test_expect_success 'autostash commit is marked as reachable' '
+	echo changed >file0 &&
+	git rebase --autostash --exec "git prune --expire=now" \
+		feature-branch^ feature-branch &&
+	# git rebase succeeds if the stash cannot be applied so we need to check
+	# the contents of file0
+	echo changed >expect &&
+	test_cmp expect file0
 '
 
 test_done

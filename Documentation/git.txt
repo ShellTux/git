@@ -13,8 +13,7 @@ SYNOPSIS
     [--exec-path[=<path>]] [--html-path] [--man-path] [--info-path]
     [-p|--paginate|-P|--no-pager] [--no-replace-objects] [--bare]
     [--git-dir=<path>] [--work-tree=<path>] [--namespace=<name>]
-    [--super-prefix=<path>] [--config-env=<name>=<envvar>]
-    <command> [<args>]
+    [--config-env=<name>=<envvar>] <command> [<args>]
 
 DESCRIPTION
 -----------
@@ -97,9 +96,9 @@ foo.bar= ...`) sets `foo.bar` to the empty string which `git config
 	to avoid ambiguity with `<name>` containing one.
 +
 This is useful for cases where you want to pass transitory
-configuration options to git, but are doing so on OS's where
-other processes might be able to read your cmdline
-(e.g. `/proc/self/cmdline`), but not your environ
+configuration options to git, but are doing so on operating systems
+where other processes might be able to read your command line
+(e.g. `/proc/self/cmdline`), but not your environment
 (e.g. `/proc/self/environ`). That behavior is the default on
 Linux, but may not be on your system.
 +
@@ -169,19 +168,23 @@ If you just want to run git as if it was started in `<path>` then use
 	details.  Equivalent to setting the `GIT_NAMESPACE` environment
 	variable.
 
---super-prefix=<path>::
-	Currently for internal use only.  Set a prefix which gives a path from
-	above a repository down to its root.  One use is to give submodules
-	context about the superproject that invoked it.
-
 --bare::
 	Treat the repository as a bare repository.  If GIT_DIR
 	environment is not set, it is set to the current working
 	directory.
 
 --no-replace-objects::
-	Do not use replacement refs to replace Git objects. See
-	linkgit:git-replace[1] for more information.
+	Do not use replacement refs to replace Git objects.
+	This is equivalent to exporting the `GIT_NO_REPLACE_OBJECTS`
+	environment variable with any value.
+	See linkgit:git-replace[1] for more information.
+
+--no-lazy-fetch::
+	Do not fetch missing objects from the promisor remote on
+	demand.  Useful together with `git cat-file -e <object>` to
+	see if the object is locally available.
+	This is equivalent to setting the `GIT_NO_LAZY_FETCH`
+	environment variable to `1`.
 
 --literal-pathspecs::
 	Treat pathspecs literally (i.e. no globbing, no pathspec magic).
@@ -208,7 +211,7 @@ If you just want to run git as if it was started in `<path>` then use
 	Do not perform optional operations that require locks. This is
 	equivalent to setting the `GIT_OPTIONAL_LOCKS` to `0`.
 
---list-cmds=group[,group...]::
+--list-cmds=<group>[,<group>...]::
 	List commands by group. This is an internal/experimental
 	option and may change or be removed in the future. Supported
 	groups are: builtins, parseopt (builtin commands that use
@@ -217,6 +220,11 @@ If you just want to run git as if it was started in `<path>` then use
 	list-<category> (see categories in command-list.txt),
 	nohelpers (exclude helper commands), alias and config
 	(retrieve command list from config variable completion.commands)
+
+--attr-source=<tree-ish>::
+	Read gitattributes from <tree-ish> instead of the worktree. See
+	linkgit:gitattributes[5]. This is equivalent to setting the
+	`GIT_ATTR_SOURCE` environment variable.
 
 GIT COMMANDS
 ------------
@@ -552,10 +560,15 @@ double-quotes and respecting backslash escapes. E.g., the value
 
 `GIT_DEFAULT_HASH`::
 	If this variable is set, the default hash algorithm for new
-	repositories will be set to this value. This value is currently
-	ignored when cloning; the setting of the remote repository
-	is used instead. The default is "sha1". THIS VARIABLE IS
-	EXPERIMENTAL! See `--object-format` in linkgit:git-init[1].
+	repositories will be set to this value. This value is
+	ignored when cloning and the setting of the remote repository
+	is always used. The default is "sha1".
+	See `--object-format` in linkgit:git-init[1].
+
+`GIT_DEFAULT_REF_FORMAT`::
+	If this variable is set, the default reference backend format for new
+	repositories will be set to this value. The default is "files".
+	See `--ref-format` in linkgit:git-init[1].
 
 Git Commits
 ~~~~~~~~~~~
@@ -619,7 +632,7 @@ The file parameters can point at the user's working file
 (e.g. `new-file` in "git-diff-files"), `/dev/null` (e.g. `old-file`
 when a new file is added), or a temporary file (e.g. `old-file` in the
 index).  `GIT_EXTERNAL_DIFF` should not worry about unlinking the
-temporary file --- it is removed when `GIT_EXTERNAL_DIFF` exits.
+temporary file -- it is removed when `GIT_EXTERNAL_DIFF` exits.
 +
 For a path that is unmerged, `GIT_EXTERNAL_DIFF` is called with 1
 parameter, <path>.
@@ -692,6 +705,9 @@ for further details.
 	tells Git not to verify the SSL certificate when fetching or
 	pushing over HTTPS.
 
+`GIT_ATTR_SOURCE`::
+	Sets the treeish that gitattributes will be read from.
+
 `GIT_ASKPASS`::
 	If this environment variable is set, then Git commands which need to
 	acquire passwords or passphrases (e.g. for HTTP or IMAP authentication)
@@ -722,13 +738,12 @@ for further details.
 	waiting for someone with sufficient permissions to fix it.
 
 `GIT_FLUSH`::
-// NEEDSWORK: make it into a usual Boolean environment variable
-	If this environment variable is set to "1", then commands such
+	If this Boolean environment variable is set to true, then commands such
 	as 'git blame' (in incremental mode), 'git rev-list', 'git log',
 	'git check-attr' and 'git check-ignore' will
 	force a flush of the output stream after each record have been
 	flushed. If this
-	variable is set to "0", the output of these commands will be done
+	variable is set to false, the output of these commands will be done
 	using completely buffered I/O.   If this environment variable is
 	not set, Git will choose buffered or record-oriented flushing
 	based on whether stdout appears to be redirected to a file or not.
@@ -836,7 +851,7 @@ of the SID and an optional counter (to avoid filename
 collisions).
 +
 In addition, if the variable is set to
-`af_unix:[<socket_type>:]<absolute-pathname>`, Git will try
+`af_unix:[<socket-type>:]<absolute-pathname>`, Git will try
 to open the path as a Unix Domain Socket.  The socket type
 can be either `stream` or `dgram`.
 +
@@ -866,6 +881,10 @@ for full details.
 	header and packfile URIs. Set this Boolean environment variable to false to prevent this
 	redaction.
 
+`GIT_NO_REPLACE_OBJECTS`::
+	Setting and exporting this environment variable tells Git to
+	ignore replacement refs and do not replace Git objects.
+
 `GIT_LITERAL_PATHSPECS`::
 	Setting this Boolean environment variable to true will cause Git to treat all
 	pathspecs literally, rather than as glob patterns. For example,
@@ -886,6 +905,11 @@ for full details.
 `GIT_ICASE_PATHSPECS`::
 	Setting this Boolean environment variable to true will cause Git to treat all
 	pathspecs as case-insensitive.
+
+`GIT_NO_LAZY_FETCH`::
+	Setting this Boolean environment variable to true tells Git
+	not to lazily fetch missing objects from the promisor remote
+	on demand.
 
 `GIT_REFLOG_ACTION`::
 	When a ref is updated, reflog entries are created to keep
@@ -909,6 +933,16 @@ for full details.
 	should not normally need to set this to `0`, but it may be
 	useful when trying to salvage data from a corrupted repository.
 
+`GIT_COMMIT_GRAPH_PARANOIA`::
+	When loading a commit object from the commit-graph, Git performs an
+	existence check on the object in the object database. This is done to
+	avoid issues with stale commit-graphs that contain references to
+	already-deleted commits, but comes with a performance penalty.
++
+The default is "false", which disables the aforementioned behavior.
+Setting this to "true" enables the existence check so that stale commits
+will never be returned from the commit-graph at the cost of performance.
+
 `GIT_ALLOW_PROTOCOL`::
 	If set to a colon-separated list of protocols, behave as if
 	`protocol.allow` is set to `never`, and each of the listed
@@ -926,7 +960,7 @@ for full details.
 `GIT_PROTOCOL`::
 	For internal use only.  Used in handshaking the wire protocol.
 	Contains a colon ':' separated list of keys with optional values
-	'key[=value]'.  Presence of unknown keys and values must be
+	'<key>[=<value>]'.  Presence of unknown keys and values must be
 	ignored.
 +
 Note that servers may need to be configured to allow this variable to
@@ -1013,10 +1047,11 @@ When first created, objects are stored in individual files, but for
 efficiency may later be compressed together into "pack files".
 
 Named pointers called refs mark interesting points in history.  A ref
-may contain the SHA-1 name of an object or the name of another ref.  Refs
-with names beginning `ref/head/` contain the SHA-1 name of the most
+may contain the SHA-1 name of an object or the name of another ref (the
+latter is called a "symbolic ref").
+Refs with names beginning `refs/head/` contain the SHA-1 name of the most
 recent commit (or "head") of a branch under development.  SHA-1 names of
-tags of interest are stored under `ref/tags/`.  A special ref named
+tags of interest are stored under `refs/tags/`.  A symbolic ref named
 `HEAD` contains the name of the currently checked-out branch.
 
 The index file is initialized with a list of all paths and, for each
@@ -1059,7 +1094,7 @@ Authors
 -------
 Git was started by Linus Torvalds, and is currently maintained by Junio
 C Hamano. Numerous contributions have come from the Git mailing list
-<git@vger.kernel.org>.  http://www.openhub.net/p/git/contributors/summary
+<git@vger.kernel.org>.  https://openhub.net/p/git/contributors/summary
 gives you a more complete list of contributors.
 
 If you have a clone of git.git itself, the

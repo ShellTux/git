@@ -46,6 +46,7 @@ check_show () {
 TIME='1466000000 +0200'
 check_show iso8601 "$TIME" '2016-06-15 16:13:20 +0200'
 check_show iso8601-strict "$TIME" '2016-06-15T16:13:20+02:00'
+check_show iso8601-strict "$(echo "$TIME" | sed 's/+0200$/+0000/')" '2016-06-15T14:13:20Z'
 check_show rfc2822 "$TIME" 'Wed, 15 Jun 2016 16:13:20 +0200'
 check_show short "$TIME" '2016-06-15'
 check_show default "$TIME" 'Wed Jun 15 16:13:20 2016 +0200'
@@ -69,6 +70,14 @@ check_show 'format:%s' '123456789 +1234' 123456789
 check_show 'format:%s' '123456789 -1234' 123456789
 check_show 'format-local:%s' '123456789 -1234' 123456789
 
+# negative TZ offset
+TIME='1466000000 -0200'
+check_show iso8601 "$TIME" '2016-06-15 12:13:20 -0200'
+check_show iso8601-strict "$TIME" '2016-06-15T12:13:20-02:00'
+check_show rfc2822 "$TIME" 'Wed, 15 Jun 2016 12:13:20 -0200'
+check_show default "$TIME" 'Wed Jun 15 12:13:20 2016 -0200'
+check_show raw "$TIME" '1466000000 -0200'
+
 # arbitrary time absurdly far in the future
 FUTURE="5758122296 -0400"
 check_show iso       "$FUTURE" "2152-06-19 18:24:56 -0400" TIME_IS_64BIT,TIME_T_IS_64BIT
@@ -88,6 +97,13 @@ check_parse 2008-02-14 bad
 check_parse '2008-02-14 20:30:45' '2008-02-14 20:30:45 +0000'
 check_parse '2008-02-14 20:30:45 -0500' '2008-02-14 20:30:45 -0500'
 check_parse '2008.02.14 20:30:45 -0500' '2008-02-14 20:30:45 -0500'
+check_parse '20080214T20:30:45' '2008-02-14 20:30:45 +0000'
+check_parse '20080214T20:30' '2008-02-14 20:30:00 +0000'
+check_parse '20080214T20' '2008-02-14 20:00:00 +0000'
+check_parse '20080214T203045' '2008-02-14 20:30:45 +0000'
+check_parse '20080214T2030' '2008-02-14 20:30:00 +0000'
+check_parse '20080214T000000.20' '2008-02-14 00:00:00 +0000'
+check_parse '20080214T00:00:00.20' '2008-02-14 00:00:00 +0000'
 check_parse '20080214T203045-04:00' '2008-02-14 20:30:45 -0400'
 check_parse '20080214T203045 -04:00' '2008-02-14 20:30:45 -0400'
 check_parse '20080214T203045.019-04:00' '2008-02-14 20:30:45 -0400'
@@ -99,6 +115,7 @@ check_parse '2008-02-14 20:30:45 -05' '2008-02-14 20:30:45 -0500'
 check_parse '2008-02-14 20:30:45 -:30' '2008-02-14 20:30:45 +0000'
 check_parse '2008-02-14 20:30:45 -05:00' '2008-02-14 20:30:45 -0500'
 check_parse '2008-02-14 20:30:45' '2008-02-14 20:30:45 -0500' EST5
+check_parse 'Thu, 7 Apr 2005 15:14:13 -0700' '2005-04-07 15:14:13 -0700'
 
 check_approxidate() {
 	echo "$1 -> $2 +0000" >expect

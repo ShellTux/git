@@ -1,7 +1,10 @@
-#include "cache.h"
+#include "git-compat-util.h"
+#include "hex.h"
+#include "match-trees.h"
+#include "strbuf.h"
 #include "tree.h"
 #include "tree-walk.h"
-#include "object-store.h"
+#include "object-store-ll.h"
 
 static int score_missing(unsigned mode)
 {
@@ -55,12 +58,12 @@ static void *fill_tree_desc_strict(struct tree_desc *desc,
 	enum object_type type;
 	unsigned long size;
 
-	buffer = read_object_file(hash, &type, &size);
+	buffer = repo_read_object_file(the_repository, hash, &type, &size);
 	if (!buffer)
 		die("unable to read tree (%s)", oid_to_hex(hash));
 	if (type != OBJ_TREE)
 		die("%s is not a tree", oid_to_hex(hash));
-	init_tree_desc(desc, buffer, size);
+	init_tree_desc(desc, hash, buffer, size);
 	return buffer;
 }
 
@@ -188,10 +191,10 @@ static int splice_tree(const struct object_id *oid1, const char *prefix,
 	if (*subpath)
 		subpath++;
 
-	buf = read_object_file(oid1, &type, &sz);
+	buf = repo_read_object_file(the_repository, oid1, &type, &sz);
 	if (!buf)
 		die("cannot read tree %s", oid_to_hex(oid1));
-	init_tree_desc(&desc, buf, sz);
+	init_tree_desc(&desc, oid1, buf, sz);
 
 	rewrite_here = NULL;
 	while (desc.size) {

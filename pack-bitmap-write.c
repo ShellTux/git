@@ -1,18 +1,22 @@
-#include "cache.h"
-#include "object-store.h"
+#include "git-compat-util.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hex.h"
+#include "object-store-ll.h"
 #include "commit.h"
-#include "tag.h"
 #include "diff.h"
 #include "revision.h"
-#include "list-objects.h"
 #include "progress.h"
-#include "pack-revindex.h"
 #include "pack.h"
 #include "pack-bitmap.h"
 #include "hash-lookup.h"
 #include "pack-objects.h"
+#include "path.h"
 #include "commit-reach.h"
 #include "prio-queue.h"
+#include "trace2.h"
+#include "tree.h"
+#include "tree-walk.h"
 
 struct bitmapped_commit {
 	struct commit *commit;
@@ -191,6 +195,13 @@ struct bb_commit {
 	unsigned idx; /* within selected array */
 };
 
+static void clear_bb_commit(struct bb_commit *commit)
+{
+	free_commit_list(commit->reverse_edges);
+	bitmap_free(commit->commit_mask);
+	bitmap_free(commit->bitmap);
+}
+
 define_commit_slab(bb_data, struct bb_commit);
 
 struct bitmap_builder {
@@ -332,7 +343,7 @@ next:
 
 static void bitmap_builder_clear(struct bitmap_builder *bb)
 {
-	clear_bb_data(&bb->data);
+	deep_clear_bb_data(&bb->data, clear_bb_commit);
 	free(bb->commits);
 	bb->commits_nr = bb->commits_alloc = 0;
 }
@@ -359,7 +370,7 @@ static int fill_bitmap_tree(struct bitmap *bitmap,
 	if (parse_tree(tree) < 0)
 		die("unable to load tree object %s",
 		    oid_to_hex(&tree->object.oid));
-	init_tree_desc(&desc, tree->buffer, tree->size);
+	init_tree_desc(&desc, &tree->object.oid, tree->buffer, tree->size);
 
 	while (tree_entry(&desc, &entry)) {
 		switch (object_type(entry.mode)) {
@@ -384,6 +395,8 @@ static int fill_bitmap_tree(struct bitmap *bitmap,
 	return 0;
 }
 
+static int reused_bitmaps_nr;
+
 static int fill_bitmap_commit(struct bb_commit *ent,
 			      struct commit *commit,
 			      struct prio_queue *queue,
@@ -404,13 +417,19 @@ static int fill_bitmap_commit(struct bb_commit *ent,
 
 		if (old_bitmap && mapping) {
 			struct ewah_bitmap *old = bitmap_for_commit(old_bitmap, c);
+			struct bitmap *remapped = bitmap_new();
 			/*
 			 * If this commit has an old bitmap, then translate that
 			 * bitmap and add its bits to this one. No need to walk
 			 * parents or the tree for this commit.
 			 */
-			if (old && !rebuild_bitmap(mapping, old, ent->bitmap))
+			if (old && !rebuild_bitmap(mapping, old, remapped)) {
+				bitmap_or(ent->bitmap, remapped);
+				bitmap_free(remapped);
+				reused_bitmaps_nr++;
 				continue;
+			}
+			bitmap_free(remapped);
 		}
 
 		/*
@@ -421,7 +440,8 @@ static int fill_bitmap_commit(struct bb_commit *ent,
 		if (!found)
 			return -1;
 		bitmap_set(ent->bitmap, pos);
-		prio_queue_put(tree_queue, get_commit_tree(c));
+		prio_queue_put(tree_queue,
+			       repo_get_commit_tree(the_repository, c));
 
 		for (p = c->parents; p; p = p->next) {
 			pos = find_object_pos(&p->item->object.oid, &found);
@@ -526,6 +546,8 @@ int bitmap_writer_build(struct packing_data *to_pack)
 
 	trace2_region_leave("pack-bitmap-write", "building_bitmaps_total",
 			    the_repository);
+	trace2_data_intmax("pack-bitmap-write", the_repository,
+			   "building_bitmaps_reused", reused_bitmaps_nr);
 
 	stop_progress(&writer.progress);
 

@@ -22,6 +22,7 @@ test_expect_success setup '
 	git branch side1 &&
 	git branch side2 &&
 	git branch side3 &&
+	git branch side4 &&
 
 	git checkout side1 &&
 	test_write_lines 1 2 3 4 5 6 >numbers &&
@@ -45,6 +46,13 @@ test_expect_success setup '
 	git mv numbers sequence &&
 	test_tick &&
 	git commit -m rename-numbers &&
+
+	git checkout side4 &&
+	test_write_lines 0 1 2 3 4 5 >numbers &&
+	echo yo >greeting &&
+	git add numbers greeting &&
+	test_tick &&
+	git commit -m other-content-modifications &&
 
 	git switch --orphan unrelated &&
 	>something-else &&
@@ -97,6 +105,21 @@ test_expect_success 'Content merge and a few conflicts' '
 	test_cmp expect actual
 '
 
+test_expect_success 'Auto resolve conflicts by "ours" strategy option' '
+	git checkout side1^0 &&
+
+	# make sure merge conflict exists
+	test_must_fail git merge side4 &&
+	git merge --abort &&
+
+	git merge -X ours side4 &&
+	git rev-parse HEAD^{tree} >expected &&
+
+	git merge-tree -X ours side1 side4 >actual &&
+
+	test_cmp expected actual
+'
+
 test_expect_success 'Barf on misspelled option, with exit code other than 0 or 1' '
 	# Mis-spell with single "s" instead of double "s"
 	test_expect_code 129 git merge-tree --write-tree --mesages FOOBAR side1 side2 2>expect &&
@@ -141,7 +164,7 @@ test_expect_success 'test conflict notices and such' '
 #   Commit O: foo, olddir/{a,b,c}
 #   Commit A: modify foo, newdir/{a,b,c}
 #   Commit B: modify foo differently & rename foo -> olddir/bar
-#   Expected: CONFLICT(content) for for newdir/bar (not olddir/bar or foo)
+#   Expected: CONFLICT(content) for newdir/bar (not olddir/bar or foo)
 
 test_expect_success 'directory rename + content conflict' '
 	# Setup
@@ -290,7 +313,7 @@ test_expect_success 'rename/add handling' '
 		# First, check that the bar that appears at stage 3 does not
 		# correspond to an individual blob anywhere in history
 		#
-		hash=$(cat out | tr "\0" "\n" | head -n 3 | grep 3.bar | cut -f 2 -d " ") &&
+		hash=$(tr "\0" "\n" <out | head -n 3 | grep 3.bar | cut -f 2 -d " ") &&
 		git rev-list --objects --all >all_blobs &&
 		! grep $hash all_blobs &&
 
@@ -357,7 +380,7 @@ test_expect_success SYMLINKS 'rename/add, where add is a mode conflict' '
 		# First, check that the bar that appears at stage 3 does not
 		# correspond to an individual blob anywhere in history
 		#
-		hash=$(cat out | tr "\0" "\n" | head -n 3 | grep 3.bar | cut -f 2 -d " ") &&
+		hash=$(tr "\0" "\n" <out | head -n 3 | grep 3.bar | cut -f 2 -d " ") &&
 		git rev-list --objects --all >all_blobs &&
 		! grep $hash all_blobs &&
 
@@ -607,8 +630,8 @@ test_expect_success 'mod6: chains of rename/rename(1to2) and add/add via collidi
 		# conflict entries do not appear as individual blobs anywhere
 		# in history.
 		#
-		hash1=$(cat out | tr "\0" "\n" | head | grep 2.four | cut -f 2 -d " ") &&
-		hash2=$(cat out | tr "\0" "\n" | head | grep 3.two | cut -f 2 -d " ") &&
+		hash1=$(tr "\0" "\n" <out | head | grep 2.four | cut -f 2 -d " ") &&
+		hash2=$(tr "\0" "\n" <out | head | grep 3.two | cut -f 2 -d " ") &&
 		git rev-list --objects --all >all_blobs &&
 		! grep $hash1 all_blobs &&
 		! grep $hash2 all_blobs &&
@@ -653,7 +676,7 @@ test_expect_success 'mod6: chains of rename/rename(1to2) and add/add via collidi
 #   Commit O: foo, olddir/{a,b,c}
 #   Commit A: delete foo, rename olddir/ -> newdir/, add newdir/bar/file
 #   Commit B: modify foo & rename foo -> olddir/bar
-#   Expected: CONFLICT(content) for for newdir/bar (not olddir/bar or foo)
+#   Expected: CONFLICT(content) for newdir/bar (not olddir/bar or foo)
 
 test_expect_success 'directory rename + rename/delete + modify/delete + directory/file conflict' '
 	# Setup
@@ -817,6 +840,154 @@ test_expect_success SANITY 'merge-ort fails gracefully in a read-only repository
 	chmod -R a-w read-only &&
 	test_must_fail git -C read-only merge-tree side1 side3 &&
 	test_must_fail git -C read-only merge-tree side1 side2
+'
+
+test_expect_success '--stdin with both a successful and a conflicted merge' '
+	printf "side1 side3\nside1 side2" | git merge-tree --stdin >actual &&
+
+	git checkout side1^0 &&
+	git merge side3 &&
+
+	printf "1\0" >expect &&
+	git rev-parse HEAD^{tree} | lf_to_nul >>expect &&
+	printf "\0" >>expect &&
+
+	git checkout side1^0 &&
+	test_must_fail git merge side2 &&
+	sed s/HEAD/side1/ greeting >tmp &&
+	mv tmp greeting &&
+	git add -u &&
+	git mv whatever~HEAD whatever~side1 &&
+
+	printf "0\0" >>expect &&
+	git write-tree | lf_to_nul >>expect &&
+
+	cat <<-EOF | q_to_tab | lf_to_nul >>expect &&
+	100644 $(git rev-parse side1~1:greeting) 1Qgreeting
+	100644 $(git rev-parse side1:greeting) 2Qgreeting
+	100644 $(git rev-parse side2:greeting) 3Qgreeting
+	100644 $(git rev-parse side1~1:whatever) 1Qwhatever~side1
+	100644 $(git rev-parse side1:whatever) 2Qwhatever~side1
+	EOF
+
+	q_to_nul <<-EOF >>expect &&
+	Q1QgreetingQAuto-mergingQAuto-merging greeting
+	Q1QgreetingQCONFLICT (contents)QCONFLICT (content): Merge conflict in greeting
+	Q1QnumbersQAuto-mergingQAuto-merging numbers
+	Q2Qwhatever~side1QwhateverQCONFLICT (file/directory)QCONFLICT (file/directory): directory in the way of whatever from side1; moving it to whatever~side1 instead.
+	Q1Qwhatever~side1QCONFLICT (modify/delete)QCONFLICT (modify/delete): whatever~side1 deleted in side2 and modified in side1.  Version side1 of whatever~side1 left in tree.
+	EOF
+
+	printf "\0\0" >>expect &&
+
+	test_cmp expect actual
+'
+
+
+test_expect_success '--merge-base is incompatible with --stdin' '
+	test_must_fail git merge-tree --merge-base=side1 --stdin 2>expect &&
+
+	grep "^fatal: .*merge-base.*stdin.* cannot be used together" expect
+'
+
+# specify merge-base as parent of branch2
+# git merge-tree --write-tree --merge-base=c2 c1 c3
+#   Commit c1: add file1
+#   Commit c2: add file2 after c1
+#   Commit c3: add file3 after c2
+#   Expected: add file3, and file2 does NOT appear
+
+test_expect_success 'specify merge-base as parent of branch2' '
+	# Setup
+	test_when_finished "rm -rf base-b2-p" &&
+	git init base-b2-p &&
+	test_commit -C base-b2-p c1 file1 &&
+	test_commit -C base-b2-p c2 file2 &&
+	test_commit -C base-b2-p c3 file3 &&
+
+	# Testing
+	TREE_OID=$(git -C base-b2-p merge-tree --write-tree --merge-base=c2 c1 c3) &&
+
+	q_to_tab <<-EOF >expect &&
+	100644 blob $(git -C base-b2-p rev-parse c1:file1)Qfile1
+	100644 blob $(git -C base-b2-p rev-parse c3:file3)Qfile3
+	EOF
+
+	git -C base-b2-p ls-tree $TREE_OID >actual &&
+	test_cmp expect actual
+'
+
+# Since the earlier tests have verified that individual merge-tree calls
+# are doing the right thing, this test case is only used to verify that
+# we can also trigger merges via --stdin, and that when we do we get
+# the same answer as running a bunch of separate merges.
+
+test_expect_success 'check the input format when --stdin is passed' '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	test_commit -C repo c1 &&
+	test_commit -C repo c2 &&
+	test_commit -C repo c3 &&
+	printf "c1 c3\nc2 -- c1 c3\nc2 c3" | git -C repo merge-tree --stdin >actual &&
+
+	printf "1\0" >expect &&
+	git -C repo merge-tree --write-tree -z c1 c3 >>expect &&
+	printf "\0" >>expect &&
+
+	printf "1\0" >>expect &&
+	git -C repo merge-tree --write-tree -z --merge-base=c2 c1 c3 >>expect &&
+	printf "\0" >>expect &&
+
+	printf "1\0" >>expect &&
+	git -C repo merge-tree --write-tree -z c2 c3 >>expect &&
+	printf "\0" >>expect &&
+
+	test_cmp expect actual
+'
+
+test_expect_success '--merge-base with tree OIDs' '
+	git merge-tree --merge-base=side1^ side1 side3 >with-commits &&
+	git merge-tree --merge-base=side1^^{tree} side1^{tree} side3^{tree} >with-trees &&
+	test_cmp with-commits with-trees
+'
+
+test_expect_success 'error out on missing tree objects' '
+	git init --bare missing-tree.git &&
+	git rev-list side3 >list &&
+	git rev-parse side3^: >>list &&
+	git pack-objects missing-tree.git/objects/pack/side3-tree-is-missing <list &&
+	side3=$(git rev-parse side3) &&
+	test_must_fail git --git-dir=missing-tree.git merge-tree $side3^ $side3 >actual 2>err &&
+	test_grep "Could not read $(git rev-parse $side3:)" err &&
+	test_must_be_empty actual
+'
+
+test_expect_success 'error out on missing blob objects' '
+	echo 1 | git hash-object -w --stdin >blob1 &&
+	echo 2 | git hash-object -w --stdin >blob2 &&
+	echo 3 | git hash-object -w --stdin >blob3 &&
+	printf "100644 blob $(cat blob1)\tblob\n" | git mktree >tree1 &&
+	printf "100644 blob $(cat blob2)\tblob\n" | git mktree >tree2 &&
+	printf "100644 blob $(cat blob3)\tblob\n" | git mktree >tree3 &&
+	git init --bare missing-blob.git &&
+	cat blob1 blob3 tree1 tree2 tree3 |
+	git pack-objects missing-blob.git/objects/pack/side1-whatever-is-missing &&
+	test_must_fail git --git-dir=missing-blob.git >actual 2>err \
+		merge-tree --merge-base=$(cat tree1) $(cat tree2) $(cat tree3) &&
+	test_grep "unable to read blob object $(cat blob2)" err &&
+	test_must_be_empty actual
+'
+
+test_expect_success 'error out on missing commits as well' '
+	git init --bare missing-commit.git &&
+	git rev-list --objects side1 side3 >list-including-initial &&
+	grep -v ^$(git rev-parse side1^) <list-including-initial >list &&
+	git pack-objects missing-commit.git/objects/pack/missing-initial <list &&
+	side1=$(git rev-parse side1) &&
+	side3=$(git rev-parse side3) &&
+	test_must_fail git --git-dir=missing-commit.git \
+		merge-tree --allow-unrelated-histories $side1 $side3 >actual &&
+	test_must_be_empty actual
 '
 
 test_done

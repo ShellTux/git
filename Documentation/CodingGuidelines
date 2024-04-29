@@ -1,5 +1,5 @@
-Like other projects, we also have some guidelines to keep to the
-code.  For Git in general, a few rough rules are:
+Like other projects, we also have some guidelines for our code.  For
+Git in general, a few rough rules are:
 
  - Most importantly, we never say "It's in POSIX; we'll happily
    ignore your needs should your system not conform to it."
@@ -24,7 +24,7 @@ code.  For Git in general, a few rough rules are:
 
    "Once it _is_ in the tree, it's not really worth the patch noise to
    go and fix it up."
-   Cf. http://lkml.iu.edu/hypermail/linux/kernel/1001.3/01069.html
+   Cf. https://lore.kernel.org/all/20100126160632.3bdbe172.akpm@linux-foundation.org/
 
  - Log messages to explain your changes are as important as the
    changes themselves.  Clearly written code and in-code comments
@@ -40,7 +40,7 @@ As for more concrete guidelines, just imitate the existing code
 contributing to). It is always preferable to match the _local_
 convention. New code added to Git suite is expected to match
 the overall style of existing code. Modifications to existing
-code is expected to match the style the surrounding code already
+code are expected to match the style the surrounding code already
 uses (even if it doesn't match the overall style of existing code).
 
 But if you must have a list of rules, here are some language
@@ -188,6 +188,26 @@ For shell scripts specifically (not exhaustive):
    hopefully nobody starts using "local" before they are reimplemented
    in C ;-)
 
+ - Some versions of shell do not understand "export variable=value",
+   so we write "variable=value" and then "export variable" on two
+   separate lines.
+
+ - Some versions of dash have broken variable assignment when prefixed
+   with "local", "export", and "readonly", in that the value to be
+   assigned goes through field splitting at $IFS unless quoted.
+
+	(incorrect)
+	local variable=$value
+	local variable=$(command args)
+
+	(correct)
+	local variable="$value"
+	local variable="$(command args)"
+
+ - Use octal escape sequences (e.g. "\302\242"), not hexadecimal (e.g.
+   "\xc2\xa2") in printf format strings, since hexadecimal escape
+   sequences are not portable.
+
 
 For C programs:
 
@@ -202,10 +222,19 @@ For C programs:
    by e.g. "echo DEVELOPER=1 >>config.mak".
 
  - We try to support a wide range of C compilers to compile Git with,
-   including old ones.  You should not use features from newer C
+   including old ones.  As of Git v2.35.0 Git requires C99 (we check
+   "__STDC_VERSION__"). You should not use features from a newer C
    standard, even if your compiler groks them.
 
-   There are a few exceptions to this guideline:
+   New C99 features have been phased in gradually, if something's new
+   in C99 but not used yet don't assume that it's safe to use, some
+   compilers we target have only partial support for it. These are
+   considered safe to use:
+
+   . since around 2007 with 2b6854c863a, we have been using
+     initializer elements which are not computable at load time. E.g.:
+
+	const char *args[] = {"constant", variable, NULL};
 
    . since early 2012 with e1327023ea, we have been using an enum
      definition whose last element is followed by a comma.  This, like
@@ -221,17 +250,23 @@ For C programs:
    . since early 2021 with 765dc168882, we have been using variadic
      macros, mostly for printf-like trace and debug macros.
 
-   These used to be forbidden, but we have not heard any breakage
-   report, and they are assumed to be safe.
+   . since late 2021 with 44ba10d6, we have had variables declared in
+     the for loop "for (int i = 0; i < 10; i++)".
+
+   New C99 features that we cannot use yet:
+
+   . %z and %zu as a printf() argument for a size_t (the %z being for
+     the POSIX-specific ssize_t). Instead you should use
+     printf("%"PRIuMAX, (uintmax_t)v).  These days the MSVC version we
+     rely on supports %z, but the C library used by MinGW does not.
+
+   . Shorthand like ".a.b = *c" in struct initializations is known to
+     trip up an older IBM XLC version, use ".a = { .b = *c }" instead.
+     See the 33665d98 (reftable: make assignments portable to AIX xlc
+     v12.01, 2022-03-28).
 
  - Variables have to be declared at the beginning of the block, before
    the first statement (i.e. -Wdeclaration-after-statement).
-
- - Declaring a variable in the for loop "for (int i = 0; i < 10; i++)"
-   is still not allowed in this codebase.  We are in the process of
-   allowing it by waiting to see that 44ba10d6 (revision: use C99
-   declaration of variable in for() loop, 2021-11-14) does not get
-   complaints.  Let's revisit this around November 2022.
 
  - NULL pointers shall be written as NULL, not as 0.
 
@@ -427,8 +462,41 @@ For C programs:
    detail.
 
  - The first #include in C files, except in platform specific compat/
-   implementations, must be either "git-compat-util.h", "cache.h" or
-   "builtin.h".  You do not have to include more than one of these.
+   implementations and sha1dc/, must be <git-compat-util.h>.  This
+   header file insulates other header files and source files from
+   platform differences, like which system header files must be
+   included in what order, and what C preprocessor feature macros must
+   be defined to trigger certain features we expect out of the system.
+   A collorary to this is that C files should not directly include
+   system header files themselves.
+
+   There are some exceptions, because certain group of files that
+   implement an API all have to include the same header file that
+   defines the API and it is convenient to include <git-compat-util.h>
+   there.  Namely:
+
+   - the implementation of the built-in commands in the "builtin/"
+     directory that include "builtin.h" for the cmd_foo() prototype
+     definition,
+
+   - the test helper programs in the "t/helper/" directory that include
+     "t/helper/test-tool.h" for the cmd__foo() prototype definition,
+
+   - the xdiff implementation in the "xdiff/" directory that includes
+     "xdiff/xinclude.h" for the xdiff machinery internals,
+
+   - the unit test programs in "t/unit-tests/" directory that include
+     "t/unit-tests/test-lib.h" that gives them the unit-tests
+     framework, and
+
+   - the source files that implement reftable in the "reftable/"
+     directory that include "reftable/system.h" for the reftable
+     internals,
+
+   are allowed to assume that they do not have to include
+   <git-compat-util.h> themselves, as it is included as the first
+   '#include' in these header files.  These headers must be the first
+   header file to be "#include"d in them, though.
 
  - A C file must directly include the header files that declare the
    functions and the types it uses, except for the functions and types
@@ -467,7 +535,7 @@ For Perl programs:
 
  - Most of the C guidelines above apply.
 
- - We try to support Perl 5.8 and later ("use Perl 5.008").
+ - We try to support Perl 5.8.1 and later ("use Perl 5.008001").
 
  - use strict and use warnings are strongly preferred.
 
@@ -495,7 +563,7 @@ For Perl programs:
 
 For Python scripts:
 
- - We follow PEP-8 (http://www.python.org/dev/peps/pep-0008/).
+ - We follow PEP-8 (https://peps.python.org/pep-0008/).
 
  - As a minimum, we aim to be compatible with Python 2.7.
 
@@ -555,7 +623,7 @@ Externally Visible Names
    . The variable name describes the effect of tweaking this knob.
 
    The section and variable names that consist of multiple words are
-   formed by concatenating the words without punctuations (e.g. `-`),
+   formed by concatenating the words without punctuation marks (e.g. `-`),
    and are broken using bumpyCaps in documentation as a hint to the
    reader.
 
@@ -589,15 +657,15 @@ Writing Documentation:
   - Prefer succinctness and matter-of-factly describing functionality
     in the abstract.  E.g.
 
-     --short:: Emit output in the short-format.
+     `--short`:: Emit output in the short-format.
 
     and avoid something like these overly verbose alternatives:
 
-     --short:: Use this to emit output in the short-format.
-     --short:: You can use this to get output in the short-format.
-     --short:: A user who prefers shorter output could....
-     --short:: Should a person and/or program want shorter output, he
-               she/they/it can...
+     `--short`:: Use this to emit output in the short-format.
+     `--short`:: You can use this to get output in the short-format.
+     `--short`:: A user who prefers shorter output could....
+     `--short`:: Should a person and/or program want shorter output, he
+                 she/they/it can...
 
     This practice often eliminates the need to involve human actors in
     your description, but it is a good practice regardless of the
@@ -607,12 +675,12 @@ Writing Documentation:
     addressing the hypothetical user, and possibly "we" when
     discussing how the program might react to the user.  E.g.
 
-      You can use this option instead of --xyz, but we might remove
+      You can use this option instead of `--xyz`, but we might remove
       support for it in future versions.
 
     while keeping in mind that you can probably be less verbose, e.g.
 
-      Use this instead of --xyz. This option might be removed in future
+      Use this instead of `--xyz`. This option might be removed in future
       versions.
 
   - If you still need to refer to an example person that is
@@ -630,70 +698,12 @@ Writing Documentation:
  The same general rule as for code applies -- imitate the existing
  conventions.
 
- A few commented examples follow to provide reference when writing or
- modifying command usage strings and synopsis sections in the manual
- pages:
 
- Placeholders are spelled in lowercase and enclosed in angle brackets:
-   <file>
-   --sort=<key>
-   --abbrev[=<n>]
+Markup:
 
- If a placeholder has multiple words, they are separated by dashes:
-   <new-branch-name>
-   --template=<template-directory>
-
- Possibility of multiple occurrences is indicated by three dots:
-   <file>...
-   (One or more of <file>.)
-
- Optional parts are enclosed in square brackets:
-   [<extra>]
-   (Zero or one <extra>.)
-
-   --exec-path[=<path>]
-   (Option with an optional argument.  Note that the "=" is inside the
-   brackets.)
-
-   [<patch>...]
-   (Zero or more of <patch>.  Note that the dots are inside, not
-   outside the brackets.)
-
- Multiple alternatives are indicated with vertical bars:
-   [-q | --quiet]
-   [--utf8 | --no-utf8]
-
- Parentheses are used for grouping:
-   [(<rev> | <range>)...]
-   (Any number of either <rev> or <range>.  Parens are needed to make
-   it clear that "..." pertains to both <rev> and <range>.)
-
-   [(-p <parent>)...]
-   (Any number of option -p, each with one <parent> argument.)
-
-   git remote set-head <name> (-a | -d | <branch>)
-   (One and only one of "-a", "-d" or "<branch>" _must_ (no square
-   brackets) be provided.)
-
- And a somewhat more contrived example:
-   --diff-filter=[(A|C|D|M|R|T|U|X|B)...[*]]
-   Here "=" is outside the brackets, because "--diff-filter=" is a
-   valid usage.  "*" has its own pair of brackets, because it can
-   (optionally) be specified only when one or more of the letters is
-   also provided.
-
-  A note on notation:
-   Use 'git' (all lowercase) when talking about commands i.e. something
-   the user would type into a shell and use 'Git' (uppercase first letter)
-   when talking about the version control system and its properties.
-
- A few commented examples follow to provide reference when writing or
- modifying paragraphs or option/command explanations that contain options
- or commands:
-
- Literal examples (e.g. use of command-line options, command names,
+ Literal parts (e.g. use of command-line options, command names,
  branch names, URLs, pathnames (files and directories), configuration and
- environment variables) must be typeset in monospace (i.e. wrapped with
+ environment variables) must be typeset as verbatim (i.e. wrapped with
  backticks):
    `--pretty=oneline`
    `git rev-list`
@@ -702,6 +712,7 @@ Writing Documentation:
    `.git/config`
    `GIT_DIR`
    `HEAD`
+   `umask`(2)
 
  An environment variable must be prefixed with "$" only when referring to its
  value and not when referring to the variable itself, in this case there is
@@ -717,6 +728,97 @@ Writing Documentation:
       `--pretty=oneline`
    Incorrect:
       `\--pretty=oneline`
+
+ Placeholders are spelled in lowercase and enclosed in
+ angle brackets surrounded by underscores:
+   _<file>_
+   _<commit>_
+
+ If a placeholder has multiple words, they are separated by dashes:
+   _<new-branch-name>_
+   _<template-directory>_
+
+ A placeholder is not enclosed in backticks, as it is not a literal.
+
+ When needed, use a distinctive identifier for placeholders, usually
+ made of a qualification and a type:
+   _<git-dir>_
+   _<key-id>_
+
+ When literal and placeholders are mixed, each markup is applied for
+ each sub-entity. If they are stuck, a special markup, called
+ unconstrained formatting is required.
+ Unconstrained formating for placeholders is __<like-this>__
+ Unconstrained formatting for literal formatting is ++like this++
+   `--jobs` _<n>_
+   ++--sort=++__<key>__
+   __<directory>__++/.git++
+   ++remote.++__<name>__++.mirror++
+
+ caveat: ++ unconstrained format is not verbatim and may expand
+ content. Use Asciidoc escapes inside them.
+
+Synopsis Syntax
+
+ Syntax grammar is formatted neither as literal nor as placeholder.
+
+ A few commented examples follow to provide reference when writing or
+ modifying command usage strings and synopsis sections in the manual
+ pages:
+
+ Possibility of multiple occurrences is indicated by three dots:
+   _<file>_...
+   (One or more of <file>.)
+
+ Optional parts are enclosed in square brackets:
+   [_<file>_...]
+   (Zero or more of <file>.)
+
+   ++--exec-path++[++=++__<path>__]
+   (Option with an optional argument.  Note that the "=" is inside the
+   brackets.)
+
+   [_<patch>_...]
+   (Zero or more of <patch>.  Note that the dots are inside, not
+   outside the brackets.)
+
+ Multiple alternatives are indicated with vertical bars:
+   [`-q` | `--quiet`]
+   [`--utf8` | `--no-utf8`]
+
+ Use spacing around "|" token(s), but not immediately after opening or
+ before closing a [] or () pair:
+   Do: [`-q` | `--quiet`]
+   Don't: [`-q`|`--quiet`]
+
+ Don't use spacing around "|" tokens when they're used to separate the
+ alternate arguments of an option:
+    Do: ++--track++[++=++(`direct`|`inherit`)]`
+    Don't: ++--track++[++=++(`direct` | `inherit`)]
+
+ Parentheses are used for grouping:
+   [(_<rev>_ | _<range>_)...]
+   (Any number of either <rev> or <range>.  Parens are needed to make
+   it clear that "..." pertains to both <rev> and <range>.)
+
+   [(`-p` _<parent>_)...]
+   (Any number of option -p, each with one <parent> argument.)
+
+   `git remote set-head` _<name>_ (`-a` | `-d` | _<branch>_)
+   (One and only one of "-a", "-d" or "<branch>" _must_ (no square
+   brackets) be provided.)
+
+ And a somewhat more contrived example:
+   `--diff-filter=[(A|C|D|M|R|T|U|X|B)...[*]]`
+   Here "=" is outside the brackets, because "--diff-filter=" is a
+   valid usage.  "*" has its own pair of brackets, because it can
+   (optionally) be specified only when one or more of the letters is
+   also provided.
+
+  A note on notation:
+   Use 'git' (all lowercase) when talking about commands i.e. something
+   the user would type into a shell and use 'Git' (uppercase first letter)
+   when talking about the version control system and its properties.
 
  If some place in the documentation needs to typeset a command usage
  example with inline substitutions, it is fine to use +monospaced and

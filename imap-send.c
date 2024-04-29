@@ -18,15 +18,17 @@
  *  GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, see <http://www.gnu.org/licenses/>.
+ *  along with this program; if not, see <https://www.gnu.org/licenses/>.
  */
 
-#include "cache.h"
+#include "git-compat-util.h"
 #include "config.h"
 #include "credential.h"
-#include "exec-cmd.h"
+#include "gettext.h"
 #include "run-command.h"
 #include "parse-options.h"
+#include "setup.h"
+#include "strbuf.h"
 #if defined(NO_OPENSSL) && !defined(HAVE_OPENSSL_CSPRNG)
 typedef void *SSL;
 #endif
@@ -65,23 +67,6 @@ __attribute__((format (printf, 1, 2)))
 static void imap_warn(const char *, ...);
 
 static char *next_arg(char **);
-
-__attribute__((format (printf, 3, 4)))
-static int nfsnprintf(char *buf, int blen, const char *fmt, ...);
-
-static int nfvasprintf(char **strp, const char *fmt, va_list ap)
-{
-	int len;
-	char tmp[8192];
-
-	len = vsnprintf(tmp, sizeof(tmp), fmt, ap);
-	if (len < 0)
-		die("Fatal: Out of memory");
-	if (len >= sizeof(tmp))
-		die("imap command overflow!");
-	*strp = xmemdupz(tmp, len);
-	return len;
-}
 
 struct imap_server_conf {
 	const char *name;
@@ -133,12 +118,10 @@ struct imap_store {
 };
 
 struct imap_cmd_cb {
-	int (*cont)(struct imap_store *ctx, struct imap_cmd *cmd, const char *prompt);
-	void (*done)(struct imap_store *ctx, struct imap_cmd *cmd, int response);
+	int (*cont)(struct imap_store *ctx, const char *prompt);
 	void *ctx;
 	char *data;
 	int dlen;
-	int uid;
 };
 
 struct imap_cmd {
@@ -205,10 +188,14 @@ static void socket_perror(const char *func, struct imap_socket *sock, int ret)
 		else
 			fprintf(stderr, "%s: unexpected EOF\n", func);
 	}
+	/* mark as used to appease -Wunused-parameter with NO_OPENSSL */
+	(void)sock;
 }
 
 #ifdef NO_OPENSSL
-static int ssl_socket_connect(struct imap_socket *sock, int use_tls_only, int verify)
+static int ssl_socket_connect(struct imap_socket *sock UNUSED,
+			      int use_tls_only UNUSED,
+			      int verify UNUSED)
 {
 	fprintf(stderr, "SSL requested but SSL support not compiled in\n");
 	return -1;
@@ -496,30 +483,17 @@ static char *next_arg(char **s)
 	return ret;
 }
 
-__attribute__((format (printf, 3, 4)))
-static int nfsnprintf(char *buf, int blen, const char *fmt, ...)
-{
-	int ret;
-	va_list va;
-
-	va_start(va, fmt);
-	if (blen <= 0 || (unsigned)(ret = vsnprintf(buf, blen, fmt, va)) >= (unsigned)blen)
-		BUG("buffer too small. Please report a bug.");
-	va_end(va);
-	return ret;
-}
-
 static struct imap_cmd *issue_imap_cmd(struct imap_store *ctx,
 				       struct imap_cmd_cb *cb,
 				       const char *fmt, va_list ap)
 {
 	struct imap *imap = ctx->imap;
 	struct imap_cmd *cmd;
-	int n, bufl;
-	char buf[1024];
+	int n;
+	struct strbuf buf = STRBUF_INIT;
 
 	cmd = xmalloc(sizeof(struct imap_cmd));
-	nfvasprintf(&cmd->cmd, fmt, ap);
+	cmd->cmd = xstrvfmt(fmt, ap);
 	cmd->tag = ++imap->nexttag;
 
 	if (cb)
@@ -531,27 +505,30 @@ static struct imap_cmd *issue_imap_cmd(struct imap_store *ctx,
 		get_cmd_result(ctx, NULL);
 
 	if (!cmd->cb.data)
-		bufl = nfsnprintf(buf, sizeof(buf), "%d %s\r\n", cmd->tag, cmd->cmd);
+		strbuf_addf(&buf, "%d %s\r\n", cmd->tag, cmd->cmd);
 	else
-		bufl = nfsnprintf(buf, sizeof(buf), "%d %s{%d%s}\r\n",
-				  cmd->tag, cmd->cmd, cmd->cb.dlen,
-				  CAP(LITERALPLUS) ? "+" : "");
+		strbuf_addf(&buf, "%d %s{%d%s}\r\n", cmd->tag, cmd->cmd,
+			    cmd->cb.dlen, CAP(LITERALPLUS) ? "+" : "");
+	if (buf.len > INT_MAX)
+		die("imap command overflow!");
 
 	if (0 < verbosity) {
 		if (imap->num_in_progress)
 			printf("(%d in progress) ", imap->num_in_progress);
 		if (!starts_with(cmd->cmd, "LOGIN"))
-			printf(">>> %s", buf);
+			printf(">>> %s", buf.buf);
 		else
 			printf(">>> %d LOGIN <user> <pass>\n", cmd->tag);
 	}
-	if (socket_write(&imap->buf.sock, buf, bufl) != bufl) {
+	if (socket_write(&imap->buf.sock, buf.buf, buf.len) != buf.len) {
 		free(cmd->cmd);
 		free(cmd);
 		if (cb)
 			free(cb->data);
+		strbuf_release(&buf);
 		return NULL;
 	}
+	strbuf_release(&buf);
 	if (cmd->cb.data) {
 		if (CAP(LITERALPLUS)) {
 			n = socket_write(&imap->buf.sock, cmd->cb.data, cmd->cb.dlen);
@@ -782,7 +759,7 @@ static int get_cmd_result(struct imap_store *ctx, struct imap_cmd *tcmd)
 				if (n != (int)cmdp->cb.dlen)
 					return RESP_BAD;
 			} else if (cmdp->cb.cont) {
-				if (cmdp->cb.cont(ctx, cmdp, cmd))
+				if (cmdp->cb.cont(ctx, cmd))
 					return RESP_BAD;
 			} else {
 				fprintf(stderr, "IMAP error: unexpected command continuation request\n");
@@ -824,8 +801,6 @@ static int get_cmd_result(struct imap_store *ctx, struct imap_cmd *tcmd)
 			}
 			if ((resp2 = parse_response_code(ctx, &cmdp->cb, cmd)) > resp)
 				resp = resp2;
-			if (cmdp->cb.done)
-				cmdp->cb.done(ctx, cmdp, resp);
 			free(cmdp->cb.data);
 			free(cmdp->cmd);
 			free(cmdp);
@@ -857,7 +832,7 @@ static void imap_close_store(struct imap_store *ctx)
 
 /*
  * hexchar() and cram() functions are based on the code from the isync
- * project (http://isync.sf.net/).
+ * project (https://isync.sourceforge.io/).
  */
 static char hexchar(unsigned int b)
 {
@@ -905,7 +880,9 @@ static char *cram(const char *challenge_64, const char *user, const char *pass)
 
 #else
 
-static char *cram(const char *challenge_64, const char *user, const char *pass)
+static char *cram(const char *challenge_64 UNUSED,
+		  const char *user UNUSED,
+		  const char *pass UNUSED)
 {
 	die("If you want to use CRAM-MD5 authenticate method, "
 	    "you have to build git-imap-send with OpenSSL library.");
@@ -913,7 +890,7 @@ static char *cram(const char *challenge_64, const char *user, const char *pass)
 
 #endif
 
-static int auth_cram_md5(struct imap_store *ctx, struct imap_cmd *cmd, const char *prompt)
+static int auth_cram_md5(struct imap_store *ctx, const char *prompt)
 {
 	int ret;
 	char *response;
@@ -1319,7 +1296,8 @@ static int split_msg(struct strbuf *all_msgs, struct strbuf *msg, int *ofs)
 	return 1;
 }
 
-static int git_imap_config(const char *var, const char *val, void *cb)
+static int git_imap_config(const char *var, const char *val,
+			   const struct config_context *ctx, void *cb)
 {
 
 	if (!strcmp("imap.sslverify", var))
@@ -1337,10 +1315,10 @@ static int git_imap_config(const char *var, const char *val, void *cb)
 	else if (!strcmp("imap.authmethod", var))
 		return git_config_string(&server.auth_method, var, val);
 	else if (!strcmp("imap.port", var))
-		server.port = git_config_int(var, val);
+		server.port = git_config_int(var, val, ctx->kvi);
 	else if (!strcmp("imap.host", var)) {
 		if (!val) {
-			git_die_config("imap.host", "Missing value for 'imap.host'");
+			return config_error_nonbool(var);
 		} else {
 			if (starts_with(val, "imap:"))
 				val += 5;
@@ -1353,7 +1331,7 @@ static int git_imap_config(const char *var, const char *val, void *cb)
 			server.host = xstrdup(val);
 		}
 	} else
-		return git_default_config(var, val, cb);
+		return git_default_config(var, val, ctx, cb);
 
 	return 0;
 }
@@ -1411,16 +1389,16 @@ static CURL *setup_curl(struct imap_server_conf *srvc, struct credential *cred)
 	if (!curl)
 		die("curl_easy_init failed");
 
-	server_fill_credential(&server, cred);
-	curl_easy_setopt(curl, CURLOPT_USERNAME, server.user);
-	curl_easy_setopt(curl, CURLOPT_PASSWORD, server.pass);
+	server_fill_credential(srvc, cred);
+	curl_easy_setopt(curl, CURLOPT_USERNAME, srvc->user);
+	curl_easy_setopt(curl, CURLOPT_PASSWORD, srvc->pass);
 
-	strbuf_addstr(&path, server.use_ssl ? "imaps://" : "imap://");
-	strbuf_addstr(&path, server.host);
+	strbuf_addstr(&path, srvc->use_ssl ? "imaps://" : "imap://");
+	strbuf_addstr(&path, srvc->host);
 	if (!path.len || path.buf[path.len - 1] != '/')
 		strbuf_addch(&path, '/');
 
-	uri_encoded_folder = curl_easy_escape(curl, server.folder, 0);
+	uri_encoded_folder = curl_easy_escape(curl, srvc->folder, 0);
 	if (!uri_encoded_folder)
 		die("failed to encode server folder");
 	strbuf_addstr(&path, uri_encoded_folder);
@@ -1428,25 +1406,25 @@ static CURL *setup_curl(struct imap_server_conf *srvc, struct credential *cred)
 
 	curl_easy_setopt(curl, CURLOPT_URL, path.buf);
 	strbuf_release(&path);
-	curl_easy_setopt(curl, CURLOPT_PORT, server.port);
+	curl_easy_setopt(curl, CURLOPT_PORT, srvc->port);
 
-	if (server.auth_method) {
+	if (srvc->auth_method) {
 #ifndef GIT_CURL_HAVE_CURLOPT_LOGIN_OPTIONS
 		warning("No LOGIN_OPTIONS support in this cURL version");
 #else
 		struct strbuf auth = STRBUF_INIT;
 		strbuf_addstr(&auth, "AUTH=");
-		strbuf_addstr(&auth, server.auth_method);
+		strbuf_addstr(&auth, srvc->auth_method);
 		curl_easy_setopt(curl, CURLOPT_LOGIN_OPTIONS, auth.buf);
 		strbuf_release(&auth);
 #endif
 	}
 
-	if (!server.use_ssl)
+	if (!srvc->use_ssl)
 		curl_easy_setopt(curl, CURLOPT_USE_SSL, (long)CURLUSESSL_TRY);
 
-	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, server.ssl_verify);
-	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, server.ssl_verify);
+	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, srvc->ssl_verify);
+	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, srvc->ssl_verify);
 
 	curl_easy_setopt(curl, CURLOPT_READFUNCTION, fread_buffer);
 

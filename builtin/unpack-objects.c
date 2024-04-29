@@ -1,16 +1,17 @@
 #include "builtin.h"
-#include "cache.h"
 #include "bulk-checkin.h"
 #include "config.h"
-#include "object-store.h"
+#include "environment.h"
+#include "gettext.h"
+#include "git-zlib.h"
+#include "hex.h"
+#include "object-store-ll.h"
 #include "object.h"
 #include "delta.h"
 #include "pack.h"
 #include "blob.h"
-#include "commit.h"
-#include "tag.h"
-#include "tree.h"
-#include "tree-walk.h"
+#include "replace-object.h"
+#include "strbuf.h"
 #include "progress.h"
 #include "decorate.h"
 #include "fsck.h"
@@ -210,7 +211,8 @@ static void write_cached_object(struct object *obj, struct obj_buffer *obj_buf)
  * Verify its reachability and validity recursively and write it out.
  */
 static int check_object(struct object *obj, enum object_type type,
-			void *data, struct fsck_options *options)
+			void *data UNUSED,
+			struct fsck_options *options UNUSED)
 {
 	struct obj_buffer *obj_buf;
 
@@ -442,7 +444,7 @@ static void unpack_delta_entry(enum object_type type, unsigned long delta_size,
 		delta_data = get_data(delta_size);
 		if (!delta_data)
 			return;
-		if (has_object_file(&base_oid))
+		if (repo_has_object_file(the_repository, &base_oid))
 			; /* Ok we have this one */
 		else if (resolve_against_held(nr, &base_oid,
 					      delta_data, delta_size))
@@ -508,7 +510,8 @@ static void unpack_delta_entry(enum object_type type, unsigned long delta_size,
 	if (resolve_against_held(nr, &base_oid, delta_data, delta_size))
 		return;
 
-	base = read_object_file(&base_oid, &type, &base_size);
+	base = repo_read_object_file(the_repository, &base_oid, &type,
+				     &base_size);
 	if (!base) {
 		error("failed to read delta-pack base object %s",
 		      oid_to_hex(&base_oid));
@@ -598,12 +601,13 @@ static void unpack_all(void)
 		die("unresolved deltas left after unpacking");
 }
 
-int cmd_unpack_objects(int argc, const char **argv, const char *prefix)
+int cmd_unpack_objects(int argc, const char **argv, const char *prefix UNUSED)
 {
 	int i;
 	struct object_id oid;
+	git_hash_ctx tmp_ctx;
 
-	read_replace_refs = 0;
+	disable_replace_refs();
 
 	git_config(git_default_config, NULL);
 
@@ -662,7 +666,9 @@ int cmd_unpack_objects(int argc, const char **argv, const char *prefix)
 	the_hash_algo->init_fn(&ctx);
 	unpack_all();
 	the_hash_algo->update_fn(&ctx, buffer, offset);
-	the_hash_algo->final_oid_fn(&oid, &ctx);
+	the_hash_algo->init_fn(&tmp_ctx);
+	the_hash_algo->clone_fn(&tmp_ctx, &ctx);
+	the_hash_algo->final_oid_fn(&oid, &tmp_ctx);
 	if (strict) {
 		write_rest();
 		if (fsck_finish(&fsck_options))
@@ -673,13 +679,7 @@ int cmd_unpack_objects(int argc, const char **argv, const char *prefix)
 	use(the_hash_algo->rawsz);
 
 	/* Write the last part of the buffer to stdout */
-	while (len) {
-		int ret = xwrite(1, buffer + offset, len);
-		if (ret <= 0)
-			break;
-		len -= ret;
-		offset += ret;
-	}
+	write_in_full(1, buffer + offset, len);
 
 	/* All done */
 	return has_errors;

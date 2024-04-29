@@ -4,7 +4,8 @@
  * Copyright (C) Linus Torvalds, 2005
  */
 #include "git-compat-util.h"
-#include "cache.h"
+#include "gettext.h"
+#include "trace2.h"
 
 static void vreportf(const char *prefix, const char *err, va_list params)
 {
@@ -18,8 +19,11 @@ static void vreportf(const char *prefix, const char *err, va_list params)
 	}
 	memcpy(msg, prefix, prefix_len);
 	p = msg + prefix_len;
-	if (vsnprintf(p, pend - p, err, params) < 0)
+	if (vsnprintf(p, pend - p, err, params) < 0) {
+		fprintf(stderr, _("error: unable to format message: %s\n"),
+			err);
 		*p = '\0'; /* vsnprintf() failed, clip at prefix */
+	}
 
 	for (; p != pend - 1 && *p; p++) {
 		if (iscntrl(*p) && *p != '\t' && *p != '\n')

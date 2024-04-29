@@ -104,6 +104,13 @@ test_expect_success FSMONITOR_DAEMON 'scalar register starts fsmon daemon' '
 	test_cmp_config -C test/src true core.fsmonitor
 '
 
+test_expect_success 'scalar register warns when background maintenance fails' '
+	git init register-repo &&
+	GIT_TEST_MAINT_SCHEDULER="crontab:false,launchctl:false,schtasks:false" \
+		scalar register register-repo 2>err &&
+	grep "could not turn on maintenance" err
+'
+
 test_expect_success 'scalar unregister' '
 	git init vanish/src &&
 	scalar register vanish/src &&
@@ -147,7 +154,14 @@ test_expect_success 'scalar clone' '
 		test_cmp expect actual &&
 
 		test_path_is_missing 1/2 &&
-		test_must_fail git rev-list --missing=print $second &&
+
+		# This relies on the fact that the presence of "--missing"
+		# on the command line forces lazy fetching off before
+		# "$second^{blob}" gets parsed.  Without "^{blob}", a
+		# bare object name "$second" is taken into the queue and
+		# the command may not fail with a fixed "rev-list --missing".
+		test_must_fail git rev-list --missing=print "$second^{blob}" -- &&
+
 		git rev-list $second &&
 		git cat-file blob $second >actual &&
 		echo "second" >expect &&
@@ -164,6 +178,20 @@ test_expect_success 'scalar reconfigure' '
 	git -C one/src config core.preloadIndex false &&
 	scalar reconfigure -a &&
 	test true = "$(git -C one/src config core.preloadIndex)"
+'
+
+test_expect_success '`reconfigure -a` removes stale config entries' '
+	git init stale/src &&
+	scalar register stale &&
+	scalar list >scalar.repos &&
+	grep stale scalar.repos &&
+
+	grep -v stale scalar.repos >expect &&
+
+	rm -rf stale &&
+	scalar reconfigure -a &&
+	scalar list >scalar.repos &&
+	test_cmp expect scalar.repos
 '
 
 test_expect_success 'scalar delete without enlistment shows a usage' '
