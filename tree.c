@@ -101,7 +101,7 @@ int read_tree_at(struct repository *r,
 				    base->buf);
 
 			if (repo_parse_commit(subrepo_p, commit))
-				die("Invalid commit %s in submodule path %s%s",
+				die("Invalid commit %s in submodule path %s",
 				    oid_to_hex(&entry.oid),
 				    base->buf);
 
